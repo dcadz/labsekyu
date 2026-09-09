@@ -24,6 +24,25 @@ if (!$action) {
 
 $is_locked = ($action === 'lock') ? 1 : 0;
 $user_id = $_SESSION['user_id'] ?? 'Unknown';
+$role = $_SESSION['role'] ?? 'Unknown';
+
+if ($role === 'teacher') {
+    // 15-minute grace period check
+    $sql = "SELECT schedule_id FROM class_schedules 
+            WHERE teacher_id = ? 
+              AND room_id = ? 
+              AND day_of_week = DAYNAME(CURDATE())
+              AND TIME(NOW()) >= SUBTIME(start_time, '00:15:00') 
+              AND TIME(NOW()) <= ADDTIME(end_time, '00:15:00')";
+    $checkStmt = $pdo->prepare($sql);
+    $checkStmt->execute([$user_id, $room_id]);
+    $validSchedule = $checkStmt->fetch();
+
+    if (!$validSchedule) {
+        echo json_encode(['success' => false, 'error' => 'Access Denied. You are outside the 15-minute grace period for this room.']);
+        exit();
+    }
+}
 
 try {
     $stmt = $pdo->prepare("INSERT INTO door_status (room_id, is_locked, last_override_by) VALUES (:room_id, :is_locked, :user_id) ON DUPLICATE KEY UPDATE is_locked = :is_locked, last_override_by = :user_id");

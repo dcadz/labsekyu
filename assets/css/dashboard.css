@@ -554,3 +554,12 @@ body {
 .glow-alert-icon {
   animation: alertGlow 1.5s infinite;
 }
+
+.form-group input, .form-group select {
+    color-scheme: dark;
+}
+
+.form-group select option {
+    background-color: var(--bg-card);
+    color: var(--text-primary);
+}

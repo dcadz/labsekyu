@@ -25,15 +25,21 @@ $teacherAlertCount = $sysAlertsCountStmt->fetchColumn();
 
 $day_of_week = date('l');
 
-// Fetch Door Status
-$doorStmt = $pdo->query("SELECT is_locked FROM door_status WHERE room_id = 'ICT Lab 1'");
-$door = $doorStmt->fetch();
-$door_locked = $door ? (bool)$door['is_locked'] : true;
-
-// Find active schedule for this teacher today
-$activeSchedStmt = $pdo->prepare("SELECT schedule_id, subject_code, section, start_time, end_time FROM class_schedules WHERE teacher_id = :teacher_id AND day_of_week = :day AND CURRENT_TIME BETWEEN start_time AND end_time LIMIT 1");
+// Find active schedule for this teacher today (including 15-min grace period)
+$activeSchedStmt = $pdo->prepare("SELECT schedule_id, subject_code, section, start_time, end_time, room_id FROM class_schedules WHERE teacher_id = :teacher_id AND day_of_week = :day AND CURRENT_TIME BETWEEN SUBTIME(start_time, '00:15:00') AND ADDTIME(end_time, '00:15:00') LIMIT 1");
 $activeSchedStmt->execute([':teacher_id' => $teacher_id, ':day' => $day_of_week]);
 $active_schedule = $activeSchedStmt->fetch();
+
+$current_room = $active_schedule ? $active_schedule['room_id'] : null;
+
+// Fetch Door Status
+$door_locked = true;
+if ($current_room) {
+    $doorStmt = $pdo->prepare("SELECT is_locked FROM door_status WHERE room_id = ?");
+    $doorStmt->execute([$current_room]);
+    $door = $doorStmt->fetch();
+    $door_locked = $door ? (bool)$door['is_locked'] : true;
+}
 
 $attendance_feed = [];
 $enrolled_count = 0; 
@@ -42,7 +48,9 @@ $late_count = 0;
 $absent_count = 0;
 
 if ($active_schedule) {
-    $enrolled_count = 35;
+    $enrStmt = $pdo->prepare("SELECT COUNT(*) FROM users WHERE role='student' AND section=?");
+    $enrStmt->execute([$active_schedule['section']]);
+    $enrolled_count = (int)$enrStmt->fetchColumn();
     
     $feedStmt = $pdo->prepare("
         SELECT a.*, u.full_name 
@@ -69,12 +77,16 @@ if ($active_schedule) {
     <title>Teacher Dashboard | LABSEKYU</title>
     <link rel="stylesheet" href="../../assets/css/dashboard.css">
     <script>
-        async function toggleDoor(action) {
+        async function toggleDoor(action, roomId) {
+            if (!roomId) {
+                alert('No active room assigned right now.');
+                return;
+            }
             try {
                 const res = await fetch('../../api/toggle_door.php', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ room_id: 'ICT Lab 1', action: action })
+                    body: JSON.stringify({ room_id: roomId, action: action })
                 });
                 const data = await res.json();
                 if (data.success) {
@@ -131,11 +143,11 @@ if ($active_schedule) {
                     <h2>Live Camera Feed</h2>
                 </div>
                 <div style="display: flex; gap: 1rem;">
-                    <div style="flex:1; background: #000; border-radius: 0.5rem; display: flex; align-items: flex-end; justify-content: center; color: var(--text-secondary); font-size: 0.875rem; padding: 1rem; position: relative; aspect-ratio: 4/3;">
-                        <span style="position: absolute; bottom: 0.5rem; left: 0; right: 0; text-align: center;">Cam A - Entry - Online</span>
+                    <div id="teacher-cam-a" style="flex:1; background: #000; border-radius: 0.5rem; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 0.875rem; position: relative; aspect-ratio: 4/3; overflow: hidden;">
+                        <span style="position: absolute; bottom: 0.5rem; left: 0; right: 0; text-align: center; z-index: 10; background: rgba(0,0,0,0.5); padding: 0.25rem;">Cam A - Entry - Online</span>
                     </div>
-                    <div style="flex:1; background: #000; border-radius: 0.5rem; display: flex; align-items: flex-end; justify-content: center; color: var(--text-secondary); font-size: 0.875rem; padding: 1rem; position: relative; aspect-ratio: 4/3;">
-                        <span style="position: absolute; bottom: 0.5rem; left: 0; right: 0; text-align: center;">Cam B - Exit - Online</span>
+                    <div id="teacher-cam-b" style="flex:1; background: #000; border-radius: 0.5rem; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 0.875rem; position: relative; aspect-ratio: 4/3; overflow: hidden;">
+                        <span style="position: absolute; bottom: 0.5rem; left: 0; right: 0; text-align: center; z-index: 10; background: rgba(0,0,0,0.5); padding: 0.25rem;">Cam B - Exit - Online</span>
                     </div>
                 </div>
                 <div style="display: flex; gap: 1rem; margin-top: 0.5rem; font-weight: 600; text-align: center; font-size: 0.875rem;">
@@ -143,6 +155,23 @@ if ($active_schedule) {
                     <div style="flex:1;">Camera B</div>
                 </div>
             </div>
+
+            <script>
+                document.addEventListener('DOMContentLoaded', () => {
+                    const roomName = "<?= $active_schedule ? htmlspecialchars($active_schedule['room_id'] ?? 'ICT Lab 1') : 'ICT Lab 1' ?>";
+                    
+                    const camA = document.getElementById('teacher-cam-a');
+                    const camB = document.getElementById('teacher-cam-b');
+                    
+                    const urlA = `http://${window.location.hostname}:8000/video_feed/IN?room=` + encodeURIComponent(roomName) + '&t=' + new Date().getTime();
+                    camA.innerHTML = `<img src="${urlA}" style="width:100%; height:100%; object-fit:cover;" onerror="this.outerHTML='<span style=\\'color:var(--accent-red)\\'>Offline - No camera detected</span>'">
+                                      <span style="position: absolute; bottom: 0.5rem; left: 0; right: 0; text-align: center; z-index: 10; background: rgba(0,0,0,0.5); padding: 0.25rem;">Cam A - Entry</span>`;
+                    
+                    const urlB = `http://${window.location.hostname}:8000/video_feed/OUT?room=` + encodeURIComponent(roomName) + '&t=' + new Date().getTime();
+                    camB.innerHTML = `<img src="${urlB}" style="width:100%; height:100%; object-fit:cover;" onerror="this.outerHTML='<span style=\\'color:var(--accent-red)\\'>Offline - No camera detected</span>'">
+                                      <span style="position: absolute; bottom: 0.5rem; left: 0; right: 0; text-align: center; z-index: 10; background: rgba(0,0,0,0.5); padding: 0.25rem;">Cam B - Exit</span>`;
+                });
+            </script>
 
             <!-- Room Utilization -->
             <div class="card">
@@ -152,7 +181,7 @@ if ($active_schedule) {
                 <div style="display: flex; gap: 1rem; background: #e2e8f0; border-radius: 0.5rem; padding: 1rem; color: #000;">
                     <div style="flex:1; text-align: center;">
                         <div style="font-size: 0.875rem; color: var(--bg-sidebar); font-weight: 600; margin-bottom: 0.25rem;">Room Number</div>
-                        <div style="font-size: 1.5rem; color: var(--bg-sidebar); font-weight: 700;">ICT Lab 1</div>
+                        <div style="font-size: 1.5rem; color: var(--bg-sidebar); font-weight: 700;"><?= $active_schedule ? htmlspecialchars($active_schedule['room_id']) : 'No Room Assigned' ?></div>
                     </div>
                     <div style="flex:2; text-align: left; padding-left: 1rem; border-left: 2px solid #cbd5e1;">
                         <div style="font-size: 0.75rem; color: var(--bg-sidebar); font-weight: 600; margin-bottom: 0.25rem;">Current Class</div>
@@ -174,19 +203,19 @@ if ($active_schedule) {
                 </div>
                 <div class="metric-grid mb-4">
                     <div class="metric-widget blue">
-                        <span class="value"><?= $enrolled_count ?></span>
+                        <span class="value" id="count-enrolled"><?= $enrolled_count ?></span>
                         <span class="label">Enrolled</span>
                     </div>
                     <div class="metric-widget blue">
-                        <span class="value" style="color: var(--accent-green)"><?= $present_count ?></span>
+                        <span class="value" id="count-present" style="color: var(--accent-green)"><?= $present_count ?></span>
                         <span class="label">Present</span>
                     </div>
                     <div class="metric-widget blue">
-                        <span class="value" style="color: var(--accent-yellow)"><?= $late_count ?></span>
+                        <span class="value" id="count-late" style="color: var(--accent-yellow)"><?= $late_count ?></span>
                         <span class="label">Late</span>
                     </div>
                     <div class="metric-widget blue">
-                        <span class="value" style="color: var(--accent-red)"><?= $absent_count ?></span>
+                        <span class="value" id="count-absent" style="color: var(--accent-red)"><?= $absent_count ?></span>
                         <span class="label">Absent</span>
                     </div>
                 </div>
@@ -213,7 +242,7 @@ if ($active_schedule) {
                         <th style="border-radius: 0 0.5rem 0.5rem 0; border: none; background: #e2e8f0; color: var(--bg-sidebar); font-size: 1rem;">Status</th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody id="attendance-tbody">
                     <?php foreach($attendance_feed as $log): ?>
                     <tr style="box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
                         <td style="border-radius: 0.5rem 0 0 0.5rem; border: none; font-size: 1rem; padding: 1.25rem 1rem; text-align: left; font-weight: 500;"><?= htmlspecialchars($log['full_name']) ?></td>
@@ -230,21 +259,66 @@ if ($active_schedule) {
                 </tbody>
             </table>
         </div>
+        
+        <script>
+            document.addEventListener('DOMContentLoaded', () => {
+                <?php if($active_schedule): ?>
+                const scheduleId = <?= json_encode($active_schedule['schedule_id']) ?>;
+                
+                setInterval(async () => {
+                    try {
+                        const res = await fetch(`../../api/get_live_attendance.php?schedule_id=${scheduleId}`);
+                        const data = await res.json();
+                        if (data.error) return;
+                        
+                        document.getElementById('count-enrolled').textContent = data.enrolled;
+                        document.getElementById('count-present').textContent = data.present;
+                        document.getElementById('count-late').textContent = data.late;
+                        document.getElementById('count-absent').textContent = data.absent;
+                        
+                        const tbody = document.getElementById('attendance-tbody');
+                        if (data.feed.length === 0) {
+                            tbody.innerHTML = `<tr style="box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+                                <td colspan="4" style="border-radius: 0.5rem; border: none; font-size: 1rem; padding: 1.25rem 1rem; font-weight: 500; text-align: center;">No attendance logs for current active class</td>
+                            </tr>`;
+                        } else {
+                            tbody.innerHTML = data.feed.map(log => `
+                                <tr style="box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+                                    <td style="border-radius: 0.5rem 0 0 0.5rem; border: none; font-size: 1rem; padding: 1.25rem 1rem; text-align: left; font-weight: 500;">${log.full_name}</td>
+                                    <td style="border: none; font-size: 1rem; padding: 1.25rem 1rem; font-weight: 500;">${log.formatted_time}</td>
+                                    <td style="border: none; font-size: 1rem; padding: 1.25rem 1rem; font-weight: 500;">${log.stay_percentage}%</td>
+                                    <td style="border-radius: 0 0.5rem 0.5rem 0; border: none; font-size: 1rem; padding: 1.25rem 1rem; font-weight: 500; color: var(--bg-sidebar);">${log.status}</td>
+                                </tr>
+                            `).join('');
+                        }
+                    } catch (err) {
+                        console.error('Error fetching live attendance:', err);
+                    }
+                }, 3000); // Poll every 3 seconds
+                <?php endif; ?>
+            });
+        </script>
 
         <!-- Right Column: Door Status -->
         <div style="display: flex; flex-direction: column; gap: 1.5rem;">
             <div class="door-status-panel">
                 <div class="door-title">Door A status</div>
                 <div class="door-subtitle">ENTRANCE</div>
-                <?php if($door_locked): ?>
-                    <div class="door-badge locked">LOCKED - ICT Lab 1</div>
-                    <button onclick="toggleDoor('unlock')" class="btn btn-primary" style="width: 100%;">
+                <?php if(!$current_room): ?>
+                    <div class="door-badge locked" style="background: rgba(255, 255, 255, 0.1); color: var(--text-secondary); border-color: rgba(255,255,255,0.2);">NO ACTIVE CLASS</div>
+                    <button class="btn btn-primary" disabled style="width: 100%; opacity: 0.5;">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                        Outside Schedule
+                    </button>
+                <?php elseif($door_locked): ?>
+                    <div class="door-badge locked">LOCKED - <?= htmlspecialchars($current_room) ?></div>
+                    <button onclick="toggleDoor('unlock', '<?= htmlspecialchars(addslashes($current_room)) ?>')" class="btn btn-primary" style="width: 100%;">
                         <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>
                         Unlock Door
                     </button>
                 <?php else: ?>
-                    <div class="door-badge unlocked">UNLOCKED - ICT Lab 1</div>
-                    <button onclick="toggleDoor('lock')" class="btn btn-primary" style="width: 100%;">
+                    <div class="door-badge unlocked">UNLOCKED - <?= htmlspecialchars($current_room) ?></div>
+                    <button onclick="toggleDoor('lock', '<?= htmlspecialchars(addslashes($current_room)) ?>')" class="btn btn-primary" style="width: 100%;">
                         <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
                         Lock Door
                     </button>

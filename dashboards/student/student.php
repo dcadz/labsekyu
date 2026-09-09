@@ -140,7 +140,7 @@ $student_id = $_SESSION['user_id'];
                     <video id="video" autoplay playsinline></video>
                     <canvas id="canvas"></canvas>
                 </div>
-                <button id="capture-btn" class="btn btn-primary" style="border-radius: 0.5rem; padding: 1rem 2rem;">Capture Face</button>
+                <button id="capture-btn" class="btn btn-primary" style="border-radius: 0.5rem; padding: 1rem 2rem;" disabled>Looking for face...</button>
                 <button id="retake-btn" class="btn btn-danger" style="display:none; border-radius: 0.5rem; padding: 1rem 2rem;">Retake Photo</button>
             </div>
 
@@ -166,6 +166,7 @@ $student_id = $_SESSION['user_id'];
     </div>
 </main>
 
+<script src="../../assets/js/face-api.min.js"></script>
 <script>
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
@@ -185,11 +186,17 @@ $student_id = $_SESSION['user_id'];
 
     async function startCamera() {
         try {
+            await Promise.all([
+                faceapi.nets.tinyFaceDetector.loadFromUri('../../assets/models'),
+                faceapi.nets.faceLandmark68Net.loadFromUri('../../assets/models'),
+                faceapi.nets.faceRecognitionNet.loadFromUri('../../assets/models')
+            ]);
+            
             stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
             video.srcObject = stream;
         } catch (err) {
             console.error("Camera access denied or unavailable", err);
-            statusMsg.textContent = "Camera access denied. Please upload a photo instead.";
+            statusMsg.innerHTML = "Camera access denied. <button onclick='startCamera()' class='btn btn-primary' style='padding: 0.5rem 1rem; font-size:0.875rem; margin-top: 0.5rem;'>Retry Camera</button>";
             statusMsg.style.color = "var(--accent-red)";
             statusMsg.style.display = "block";
             captureBtn.style.display = "none";
@@ -197,6 +204,37 @@ $student_id = $_SESSION['user_id'];
     }
 
     startCamera();
+
+    let faceDetectionCounter = 3;
+
+    video.addEventListener('play', () => {
+        setInterval(async () => {
+            if (video.paused || video.ended) return;
+            
+            const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+                .withFaceLandmarks()
+                .withFaceDescriptor();
+            
+            if (detection && captureBtn.style.display !== 'none') {
+                captureBtn.disabled = false;
+                captureBtn.style.opacity = 1;
+                
+                if (faceDetectionCounter > 0) {
+                    captureBtn.innerText = `Auto-capturing in ${faceDetectionCounter}...`;
+                    faceDetectionCounter--;
+                } else {
+                    captureBtn.innerText = "Capturing...";
+                    faceDetectionCounter = 3;
+                    captureBtn.click();
+                }
+            } else if (captureBtn.style.display !== 'none') {
+                faceDetectionCounter = 3;
+                captureBtn.disabled = true;
+                captureBtn.innerText = "Looking for face...";
+                captureBtn.style.opacity = 0.5;
+            }
+        }, 1000);
+    });
 
     // Capture Photo Logic
     captureBtn.addEventListener('click', () => {

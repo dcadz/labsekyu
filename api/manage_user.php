@@ -45,16 +45,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         
-        // Fetch role_id to delete from legacy table
+        // Fetch role_id to delete from legacy table and face database
         $stmtId = $pdo->prepare("SELECT role_id, role FROM users WHERE id = ?");
         $stmtId->execute([$user_id]);
         $u = $stmtId->fetch();
         
         $stmt = $pdo->prepare("DELETE FROM users WHERE id = ? AND role != 'tech_support'");
         if ($stmt->execute([$user_id])) {
-            if ($u && $u['role'] === 'student' && !empty($u['role_id'])) {
-                $delLegacy = $pdo->prepare("DELETE FROM students WHERE uid = ?");
-                $delLegacy->execute([$u['role_id']]);
+            if ($u && !empty($u['role_id'])) {
+                if ($u['role'] === 'student') {
+                    $delLegacy = $pdo->prepare("DELETE FROM students WHERE uid = ?");
+                    $delLegacy->execute([$u['role_id']]);
+                }
+                
+                // Remove face encoding from Python backend
+                $ch = curl_init();
+                curl_setopt($ch, CURLOPT_URL, "http://localhost:8000/api/delete_face");
+                curl_setopt($ch, CURLOPT_POST, 1);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, ['uid' => $u['role_id']]);
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_TIMEOUT, 2);
+                curl_exec($ch);
+                curl_close($ch);
             }
             echo json_encode(['success' => true, 'message' => 'User deleted successfully']);
         } else {

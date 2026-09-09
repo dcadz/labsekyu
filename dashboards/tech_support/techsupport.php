@@ -8,6 +8,34 @@ require_once __DIR__ . '/../../core/db_connect.php';
 $pendingCountStmt = $pdo->query("SELECT COUNT(*) FROM teacher_alerts WHERE status = 'pending'");
 $pendingCount = $pendingCountStmt->fetchColumn();
 
+// --- SCHEDULE-BASED AUTO UNLOCK LOGIC ---
+$currentTime = date('H:i:s');
+$currentDay = date('l');
+
+// 1. Find rooms active RIGHT NOW
+$activeRoomsStmt = $pdo->prepare("SELECT DISTINCT room_id FROM class_schedules WHERE day_of_week = ? AND start_time <= ? AND end_time >= ?");
+$activeRoomsStmt->execute([$currentDay, $currentTime, $currentTime]);
+$scheduledActiveRooms = $activeRoomsStmt->fetchAll(PDO::FETCH_COLUMN);
+
+if (!empty($scheduledActiveRooms)) {
+    $inQuery = implode(',', array_fill(0, count($scheduledActiveRooms), '?'));
+    $updateDoors = $pdo->prepare("UPDATE door_status SET is_locked = 0 WHERE room_id IN ($inQuery)");
+    $updateDoors->execute(array_values($scheduledActiveRooms));
+}
+
+// 2. Lock scheduled rooms that are NOT active right now
+$allScheduledRoomsStmt = $pdo->prepare("SELECT DISTINCT room_id FROM class_schedules WHERE day_of_week = ?");
+$allScheduledRoomsStmt->execute([$currentDay]);
+$allScheduledRooms = $allScheduledRoomsStmt->fetchAll(PDO::FETCH_COLUMN);
+
+$roomsToLock = array_diff($allScheduledRooms, $scheduledActiveRooms);
+if (!empty($roomsToLock)) {
+    $inQuery = implode(',', array_fill(0, count($roomsToLock), '?'));
+    $lockDoors = $pdo->prepare("UPDATE door_status SET is_locked = 1 WHERE room_id IN ($inQuery)");
+    $lockDoors->execute(array_values($roomsToLock));
+}
+// ----------------------------------------
+
 // Fetch All Door Statuses to determine occupancy/unlocked status
 $doorStmt = $pdo->query("SELECT room_id FROM door_status WHERE is_locked = 0");
 $unlockedRooms = $doorStmt->fetchAll(PDO::FETCH_COLUMN);
@@ -53,6 +81,51 @@ if (empty($attendance_feed)) {
     <link rel="stylesheet" href="../../assets/css/dashboard.css?v=<?= time() ?>">
     <script>
         let currentSelectedRoom = 'ICT Lab 1';
+
+        async function addRoom() {
+            const roomName = prompt("Enter new room name (e.g., 'Lab 401'):");
+            if (!roomName) return;
+
+            try {
+                const res = await fetch('../../api/add_room.php', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ room_name: roomName })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    // Reload page to reflect new grid
+                    window.location.reload();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (err) {
+                alert('Request failed');
+            }
+        }
+
+        async function deleteRoom() {
+            if (!confirm(`Are you sure you want to delete room '${currentSelectedRoom}'?`)) return;
+            try {
+                const res = await fetch('../../api/delete_room.php', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ room_name: currentSelectedRoom })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    const gridCell = document.getElementById('grid-room-' + currentSelectedRoom);
+                    if (gridCell) {
+                        gridCell.remove();
+                    }
+                    alert('Room deleted successfully.');
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (err) {
+                alert('Request failed');
+            }
+        }
 
         async function toggleDoor(action) {
             try {
@@ -115,8 +188,12 @@ if (empty($attendance_feed)) {
         
         <!-- ROOM OCCUPANCY -->
         <div class="card">
-            <div class="card-header">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
                 <h2>ROOM OCCUPANCY</h2>
+                <div>
+                    <button class="btn btn-primary" onclick="addRoom()" style="padding: 0.5rem 1rem; font-size: 0.875rem;">+ Add Room</button>
+                    <button class="btn btn-primary" onclick="deleteRoom()" style="padding: 0.5rem 1rem; font-size: 0.875rem; background: var(--accent-red); margin-left: 0.5rem;">Delete Room</button>
+                </div>
             </div>
             <div class="tier-label">3rd Floor</div>
             <div class="tier-grid">
@@ -156,6 +233,31 @@ if (empty($attendance_feed)) {
                 }
                 ?>
             </div>
+
+            <!-- DYNAMIC ROOMS (MAX 9 GRID) -->
+            <div class="tier-label" style="margin-top: 1.5rem;">Dynamic Rooms</div>
+            <div class="tier-grid" style="grid-template-columns: repeat(9, 1fr);">
+                <?php
+                // Fetch all rooms from DB
+                $allDbRoomsStmt = $pdo->query("SELECT room_id FROM door_status");
+                $allDbRooms = $allDbRoomsStmt->fetchAll(PDO::FETCH_COLUMN);
+                $hardcodedRooms = array_merge($rooms_300, $rooms_200, $rooms_100);
+                
+                $dynamicRooms = array_diff($allDbRooms, $hardcodedRooms);
+                
+                if (empty($dynamicRooms)) {
+                    echo "<div style='grid-column: 1 / -1; color: var(--text-secondary); font-size: 0.875rem;'>No dynamic rooms added yet.</div>";
+                } else {
+                    foreach ($dynamicRooms as $room) {
+                        $isOcc = in_array($room, $unlockedRooms);
+                        $bg = $isOcc ? 'var(--accent-green)' : '#64748b';
+                        $color = '#fff';
+                        echo "<div id=\"grid-room-$room\" onclick=\"changeRoom('$room')\" style='background: $bg; color: $color; text-align: center; padding: 1.2rem 0.5rem; font-weight: bold; font-size: 1.125rem; cursor: pointer; transition: opacity 0.2s, background 0.3s;' onmouseover=\"this.style.opacity='0.8'\" onmouseout=\"this.style.opacity='1'\">$room</div>";
+                    }
+                }
+                ?>
+            </div>
+
         </div>
 
         <!-- 2-COLUMN LAYOUT -->
@@ -169,12 +271,12 @@ if (empty($attendance_feed)) {
                         <h2 id="camera-title">Live camera field</h2>
                     </div>
                     <div class="camera-split">
-                        <div style="flex:1; background: #000; border-radius: 0.5rem; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-secondary); min-height: 250px; position: relative;">
-                            <span id="cam-enter-status">Select a room</span>
+                        <div id="cam-enter-status" style="flex:1; background: #000; border-radius: 0.5rem; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-secondary); min-height: 250px; position: relative; overflow: hidden;">
+                            <span>Select a room</span>
                             <span style="position: absolute; bottom: 0.75rem; font-size: 0.75rem; background: rgba(0,0,0,0.5); padding: 0.25rem 0.5rem; border-radius: 0.25rem;">Camera A (Log In)</span>
                         </div>
-                        <div style="flex:1; background: #000; border-radius: 0.5rem; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-secondary); min-height: 250px; position: relative;">
-                            <span id="cam-exit-status">Select a room</span>
+                        <div id="cam-exit-status" style="flex:1; background: #000; border-radius: 0.5rem; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-secondary); min-height: 250px; position: relative; overflow: hidden;">
+                            <span>Select a room</span>
                             <span style="position: absolute; bottom: 0.75rem; font-size: 0.75rem; background: rgba(0,0,0,0.5); padding: 0.25rem 0.5rem; border-radius: 0.25rem;">Camera B (Log Out)</span>
                         </div>
                     </div>
@@ -255,17 +357,22 @@ if (empty($attendance_feed)) {
         if(!skipCamera) {
             document.getElementById('camera-title').innerText = "Live camera field - Room " + roomNumber;
             
-            // Show Connecting State
             const camA = document.getElementById('cam-enter-status');
             const camB = document.getElementById('cam-exit-status');
+            
+            // Connecting state
             camA.innerHTML = '<span style="color: var(--accent-yellow);">Connecting...</span>';
             camB.innerHTML = '<span style="color: var(--accent-yellow);">Connecting...</span>';
 
-            // Simulate Connection Delay and Failure
-            setTimeout(() => {
-                camA.innerHTML = '<span style="color: var(--accent-red);">Offline - No camera detected</span>';
-                camB.innerHTML = '<span style="color: var(--accent-red);">Offline - No camera detected</span>';
-            }, 1500);
+            // Load Camera A (IN)
+            const urlA = `http://${window.location.hostname}:8000/video_feed/IN?room=` + encodeURIComponent(roomNumber) + '&t=' + new Date().getTime();
+            camA.innerHTML = `<img src="${urlA}" style="width:100%; height:100%; object-fit:cover;" onerror="this.outerHTML='<span style=\\'color:var(--accent-red)\\'>Offline - No camera detected</span>'">
+                              <span style="position: absolute; bottom: 0.75rem; font-size: 0.75rem; background: rgba(0,0,0,0.5); padding: 0.25rem 0.5rem; border-radius: 0.25rem;">Camera A (Log In)</span>`;
+
+            // Load Camera B (OUT)
+            const urlB = `http://${window.location.hostname}:8000/video_feed/OUT?room=` + encodeURIComponent(roomNumber) + '&t=' + new Date().getTime();
+            camB.innerHTML = `<img src="${urlB}" style="width:100%; height:100%; object-fit:cover;" onerror="this.outerHTML='<span style=\\'color:var(--accent-red)\\'>Offline - No camera detected</span>'">
+                              <span style="position: absolute; bottom: 0.75rem; font-size: 0.75rem; background: rgba(0,0,0,0.5); padding: 0.25rem 0.5rem; border-radius: 0.25rem;">Camera B (Log Out)</span>`;
         }
         
         // Update Room Number in Utilization early

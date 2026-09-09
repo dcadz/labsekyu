@@ -18,7 +18,7 @@ if (isset($_GET['uid'])) {
     $room_status = $room_status_row ? $room_status_row['setting_value'] : 'LOCKED';
 
     // Verify user exists in the users table using role_id (RFID tag)
-    $stmt = $pdo->prepare("SELECT id, full_name, role FROM users WHERE role_id=:uid");
+    $stmt = $pdo->prepare("SELECT id, full_name, role, section FROM users WHERE role_id=:uid");
     $stmt->execute([':uid' => $uid]);
     $user = $stmt->fetch();
     
@@ -62,14 +62,34 @@ if (isset($_GET['uid'])) {
         if ($is_currently_in) {
             echo "ALREADY_IN\n" . $name;
         } else {
-            // Find active class schedule for the current time
-            $stmt = $pdo->prepare("SELECT schedule_id, start_time, end_time FROM class_schedules WHERE day_of_week=:day AND :time BETWEEN start_time AND end_time LIMIT 1");
+            // Find active class schedule (allow check-in 30 mins early)
+            $stmt = $pdo->prepare("SELECT schedule_id, start_time, end_time, section FROM class_schedules WHERE day_of_week=:day AND :time >= SUBTIME(start_time, '00:30:00') AND :time <= end_time LIMIT 1");
             $stmt->execute([':day' => $day_of_week, ':time' => $time]);
             $schedule = $stmt->fetch();
             $schedule_id = $schedule ? $schedule['schedule_id'] : null;
             
-            // For checking late, use room_status as fallback or use schedule
-            $status = ($room_status === 'LOCKED') ? "Late" : "Present";
+            // Student restrictions
+            if ($user['role'] === 'student') {
+                if (!$schedule) {
+                    echo "NO_SCHEDULE\n" . $name;
+                    exit();
+                }
+                if ($user['section'] !== $schedule['section']) {
+                    echo "INVALID_SECTION\n" . $name . "\n" . "Required: " . $schedule['section'];
+                    exit();
+                }
+            }
+            
+            // Determine Late or Present based on schedule (15 min grace period)
+            $status = "Present";
+            if ($schedule) {
+                $start_time_ts = strtotime($date . ' ' . $schedule['start_time']);
+                $current_ts = strtotime($current_datetime);
+                // 15 minutes = 900 seconds
+                if ($current_ts > ($start_time_ts + 900)) {
+                    $status = "Late";
+                }
+            }
             
             $stmt = $pdo->prepare("INSERT INTO attendance_logs (student_id, schedule_id, log_date, entry_timestamp, status, sync_source) VALUES (:student_id, :schedule_id, :date, :entry, :status, 'Live')");
             $inserted = $stmt->execute([
@@ -114,6 +134,7 @@ if (isset($_GET['uid'])) {
                         $stay_percentage = ($actual_duration / $total_class_duration) * 100;
                         if ($stay_percentage > 100) $stay_percentage = 100;
                         
+                        // If they didn't complete 85% of class, marked as Absent.
                         if ($stay_percentage < 85) {
                             $new_status = 'Absent';
                         }

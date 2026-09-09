@@ -73,9 +73,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } elseif ($has_upload) {
                     move_uploaded_file($_FILES['face_image_file']['tmp_name'], $filePath);
                 }
-
-                $sweetalert_type = 'success';
-                $sweetalert_message = "Student registered and automatically enrolled in section $section successfully!";
+                
+                // Validate with Python Server
+                $cfile = new CURLFile($filePath, 'image/jpeg', 'face.jpg');
+                $post = array('uid' => $student_id, 'image' => $cfile);
+                $ch = curl_init();
+                curl_setopt($ch, CURLOPT_URL, "http://localhost:8000/api/register_face");
+                curl_setopt($ch, CURLOPT_POST, 1);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $post);
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                $response = curl_exec($ch);
+                $httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                
+                if ($httpcode != 200) {
+                    $respData = json_decode($response, true);
+                    $errMsg = $respData['error'] ?? 'Face rejected by recognition server.';
+                    if (file_exists($filePath)) unlink($filePath);
+                    
+                    // Rollback DB inserts
+                    $pdo->prepare("DELETE FROM users WHERE role_id = ?")->execute([$student_id]);
+                    $pdo->prepare("DELETE FROM students WHERE uid = ?")->execute([$student_id]);
+                    
+                    $sweetalert_type = 'error';
+                    $sweetalert_message = $errMsg;
+                } else {
+                    $sweetalert_type = 'success';
+                    $sweetalert_message = "Student registered and automatically enrolled in section $section successfully!";
+                }
             } else {
                 $sweetalert_type = 'error';
                 $sweetalert_message = "Failed to create user.";
@@ -307,22 +332,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     const retakeBtn = document.getElementById('retakeBtn');
     const faceInput = document.getElementById('face_image_base64');
     let stream;
+    let faceDetectionCounter = 3;
+    let detectionInterval = null;
 
     if (startBtn) {
         startBtn.addEventListener('click', async () => {
             try {
+                startBtn.textContent = 'Loading Camera...';
+                startBtn.disabled = true;
+
                 stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
                 video.srcObject = stream;
                 video.play();
+                
                 startBtn.style.display = 'none';
+                startBtn.textContent = 'Start Camera';
+                startBtn.disabled = false;
+                
                 snapBtn.style.display = 'block';
+                snapBtn.textContent = "Capture Photo";
+                snapBtn.disabled = false;
+                snapBtn.style.opacity = 1;
+
                 photo.style.display = 'none';
                 video.style.display = 'block';
                 
-                // Clear file upload input if using camera
                 document.getElementById('face_image_file').value = '';
             } catch (err) {
-                Swal.fire('Camera Error', 'Error accessing webcam: ' + err, 'error');
+                startBtn.textContent = 'Start Camera';
+                startBtn.disabled = false;
+                Swal.fire('Camera Error', 'Error accessing webcam. Please allow permissions.', 'error');
             }
         });
     }
@@ -358,7 +397,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 video.play();
                 video.style.display = 'block';
                 photo.style.display = 'none';
+                
                 snapBtn.style.display = 'block';
+                snapBtn.disabled = false;
+                snapBtn.style.opacity = 1;
+                snapBtn.innerText = "Capture Photo";
+                
                 faceInput.value = '';
             } catch (err) {
                 Swal.fire('Camera Error', 'Error accessing webcam: ' + err, 'error');
@@ -375,6 +419,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (stream) {
                 stream.getTracks().forEach(track => track.stop());
             }
+            if (detectionInterval) clearInterval(detectionInterval);
             video.style.display = 'none';
             startBtn.style.display = 'block';
             snapBtn.style.display = 'none';

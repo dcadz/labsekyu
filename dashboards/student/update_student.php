@@ -66,6 +66,26 @@ try {
             $image_data = base64_decode($parts[1]);
             if ($image_data !== false) {
                 file_put_contents($new_path, $image_data);
+                
+                // Send to Python Face Recognition Server for Encoding and Duplicate Checking
+                $cfile = new CURLFile($new_path, 'image/jpeg', 'face.jpg');
+                $post = array('uid' => $role_id, 'image' => $cfile);
+                $ch = curl_init();
+                curl_setopt($ch, CURLOPT_URL, "http://localhost:8000/api/register_face");
+                curl_setopt($ch, CURLOPT_POST, 1);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $post);
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                $response = curl_exec($ch);
+                $httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+                
+                if ($httpcode != 200) {
+                    $respData = json_decode($response, true);
+                    $errMsg = $respData['error'] ?? 'Face rejected by recognition server.';
+                    unlink($new_path); // Remove invalid face
+                    echo json_encode(['success' => false, 'error' => $errMsg]);
+                    exit();
+                }
             }
         }
     }

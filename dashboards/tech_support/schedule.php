@@ -15,37 +15,7 @@ $message_type = 'success'; // or 'error'
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
-    if ($action === 'add_teacher') {
-        $first_name = trim($_POST['first_name'] ?? '');
-        $middle_name = trim($_POST['middle_name'] ?? '');
-        $last_name = trim($_POST['last_name'] ?? '');
-        $academic_rank = trim($_POST['academic_rank'] ?? '');
-        $email = trim($_POST['email'] ?? '');
-        $password = $_POST['password'] ?? '';
-        
-        $full_name = trim("$first_name $middle_name $last_name");
-
-        if (!empty($first_name) && !empty($last_name) && !empty($email) && !empty($password)) {
-            // Check if email already exists
-            $stmt = $pdo->prepare("SELECT id FROM users WHERE email = ? LIMIT 1");
-            $stmt->execute([$email]);
-            if ($stmt->fetch()) {
-                $message = "Email already exists. Please choose another.";
-                $message_type = "error";
-            } else {
-                $password_hash = password_hash($password, PASSWORD_DEFAULT);
-                $role_id = 'TCH-' . strtoupper(substr(md5($email . time()), 0, 6));
-                
-                $insert_stmt = $pdo->prepare("INSERT INTO users (full_name, first_name, middle_name, last_name, email, password_hash, role, role_id, academic_rank) VALUES (?, ?, ?, ?, ?, ?, 'teacher', ?, ?)");
-                if ($insert_stmt->execute([$full_name, $first_name, $middle_name, $last_name, $email, $password_hash, $role_id, $academic_rank])) {
-                    $message = "Teacher successfully registered!";
-                } else {
-                    $message = "Failed to register teacher.";
-                    $message_type = "error";
-                }
-            }
-        }
-    } elseif ($action === 'delete_schedule') {
+    if ($action === 'delete_schedule') {
         $schedule_id = $_POST['schedule_id'] ?? '';
         if ($schedule_id) {
             $stmt = $pdo->prepare("DELETE FROM class_schedules WHERE schedule_id = ?");
@@ -132,13 +102,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Fetch all teachers for dropdown and management
-$teacherStmt = $pdo->query("SELECT id, full_name, email, academic_rank FROM users WHERE role = 'teacher'");
+// Fetch all teachers for dropdown
+$teacherStmt = $pdo->query("SELECT id, full_name FROM users WHERE role = 'teacher'");
 $teachers = $teacherStmt->fetchAll();
-
-// Fetch all students for management
-$studentStmt = $pdo->query("SELECT id, full_name, email, section FROM users WHERE role = 'student'");
-$students = $studentStmt->fetchAll();
 
 // Fetch all schedules for display
 $schedStmt = $pdo->query("SELECT c.*, u.full_name as teacher_name FROM class_schedules c LEFT JOIN users u ON c.teacher_id = u.id ORDER BY c.day_of_week, c.start_time");
@@ -159,53 +125,35 @@ $schedules = $schedStmt->fetchAll();
         .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.875rem; color: #fff; font-weight: bold; }
         .form-group input, .form-group select { width: 100%; padding: 0.75rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; }
         
-        /* Modal Styles */
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
-        .modal-content { background: white; padding: 2rem; border-radius: 0.5rem; width: 90%; max-width: 400px; color: #333; }
-        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
-        .modal-header h3 { margin: 0; }
-        .close-btn { background: none; border: none; font-size: 1.5rem; cursor: pointer; }
-        
         .action-btn { background: none; border: none; cursor: pointer; color: var(--bg-sidebar); display: inline-flex; align-items: center; justify-content: center; padding: 0.25rem; }
         .action-btn:hover { color: var(--accent-blue); }
         .action-btn.delete:hover { color: var(--accent-red); }
 
-        .partition-col {
-            border-right: 2px solid white;
-            padding-right: 1.5rem;
-        }
-        .partition-col-next {
-            padding-left: 1.5rem;
-        }
+        .card { background: var(--bg-card); color: #fff; }
+        .card-header h2 { color: #fff; }
 
-        .card {
-            background: var(--bg-card);
-            color: #fff;
-        }
-        
-        .card-header h2 {
-            color: #fff;
-        }
-
-        /* Isolated Responsive Grid for Schedule */
-        .schedule-top-grid {
+        .schedule-grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 3rem;
-            margin-bottom: 3rem;
-        }
-        .schedule-bottom-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 3rem;
+            grid-template-columns: 1fr 2fr;
+            gap: 2rem;
         }
 
         @media (max-width: 1024px) {
-            .schedule-top-grid, .schedule-bottom-grid {
-                grid-template-columns: 1fr;
-            }
+            .schedule-grid { grid-template-columns: 1fr; }
         }
-
+        
+        .loading-spinner {
+            border: 4px solid rgba(255,255,255,0.3);
+            border-top: 4px solid #fff;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 0.5rem;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
@@ -219,6 +167,10 @@ $schedules = $schedStmt->fetchAll();
         <a href="schedule.php" class="sidebar-link active">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
             Schedule
+        </a>
+        <a href="user_management.php" class="sidebar-link">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+            User Management
         </a>
         <a href="register_student.php" class="sidebar-link">
             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
@@ -247,75 +199,41 @@ $schedules = $schedStmt->fetchAll();
 <main class="main-content">
     <div class="dashboard-container" style="display: flex; flex-direction: column; width: 100%;">
         
-        <!-- TOP SECTION: 3 Columns -->
-        <div class="schedule-top-grid">
+        <div class="schedule-grid">
             
-            <!-- Col 1: Teacher Registration Form -->
-            <div>
-                <div class="card" style="margin: 0; height: 100%;">
-                    <div class="card-header">
-                        <h2>Teacher Registration</h2>
+            <!-- Col 1: Forms -->
+            <div style="display: flex; flex-direction: column; gap: 2rem;">
+                
+                <!-- OCR Scan Schedule Form -->
+                <div class="card" style="margin: 0; background: linear-gradient(135deg, rgba(59,130,246,0.1) 0%, rgba(37,99,235,0.1) 100%); border: 1px solid rgba(59,130,246,0.3);">
+                    <div class="card-header" style="border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem; margin-bottom: 1rem;">
+                        <h2 style="display: flex; align-items: center; gap: 0.5rem;">
+                            <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                            Scan Schedule
+                        </h2>
                     </div>
+                    <p style="font-size: 0.875rem; color: #cbd5e1; margin-bottom: 1rem;">Upload a picture of a schedule to automatically extract and fill the form below.</p>
                     
-                    <form method="POST" action="" id="teacherForm" onsubmit="return confirmSave(event, this, 'register this teacher')">
-                        <input type="hidden" name="action" value="add_teacher">
-                        
-                        <div class="form-group">
-                            <label>Academic Rank</label>
-                            <select name="academic_rank" required>
-                                <option value="">Select Rank...</option>
-                                <option value="Instructor I">Instructor I</option>
-                                <option value="Instructor II">Instructor II</option>
-                                <option value="Instructor III">Instructor III</option>
-                                <option value="Assistant Professor I">Assistant Professor I</option>
-                                <option value="Assistant Professor II">Assistant Professor II</option>
-                                <option value="Assistant Professor III">Assistant Professor III</option>
-                                <option value="Assistant Professor IV">Assistant Professor IV</option>
-                                <option value="Associate Professor I">Associate Professor I</option>
-                                <option value="Associate Professor II">Associate Professor II</option>
-                                <option value="Associate Professor III">Associate Professor III</option>
-                                <option value="Associate Professor IV">Associate Professor IV</option>
-                                <option value="Associate Professor V">Associate Professor V</option>
-                                <option value="Professor I">Professor I</option>
-                                <option value="Professor II">Professor II</option>
-                                <option value="Professor III">Professor III</option>
-                                <option value="Professor IV">Professor IV</option>
-                                <option value="Professor V">Professor V</option>
-                                <option value="Professor VI">Professor VI</option>
-                            </select>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label>First Name</label>
-                            <input type="text" name="first_name" required>
-                        </div>
-                        <div class="form-group">
-                            <label>Middle Name</label>
-                            <input type="text" name="middle_name">
-                        </div>
-                        <div class="form-group">
-                            <label>Surname</label>
-                            <input type="text" name="last_name" required>
-                        </div>
-                        <div class="form-group">
-                            <label>Email</label>
-                            <input type="email" name="email" required>
-                        </div>
-                        <div class="form-group">
-                            <label>Password</label>
-                            <input type="password" name="password" required>
-                        </div>
-                        <button type="submit" class="btn btn-success" style="width: 100%; border-radius: 0.5rem; margin-top: 1rem;">Register Teacher</button>
-                    </form>
+                    <div class="form-group">
+                        <input type="file" id="schedule-image" accept="image/*" style="background: rgba(0,0,0,0.2); border: 1px dashed rgba(255,255,255,0.3); padding: 1.5rem; text-align: center; cursor: pointer; color: white;">
+                    </div>
+                    <button type="button" id="scan-btn" class="btn btn-primary" style="width: 100%; border-radius: 0.5rem;" onclick="scanSchedule()">
+                        Scan Image
+                    </button>
+                    <div id="scan-result" style="margin-top: 1rem; font-size: 0.875rem; color: #10b981; display: none;">Scan successful! Data applied below. Please review.</div>
                 </div>
-            </div>
 
-            <!-- Col 2: Add Class Schedule Form -->
-            <div>
+                <!-- Add/Edit Class Schedule Form -->
                 <div class="card" style="margin: 0; height: 100%;">
                     <div class="card-header" style="align-items: center;">
                         <h2 id="form-title">Add Class Schedule</h2>
                     </div>
+                    
+                    <?php if ($message): ?>
+                        <div style="background: <?= $message_type === 'success' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)' ?>; color: <?= $message_type === 'success' ? '#10b981' : '#ef4444' ?>; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;">
+                            <?= htmlspecialchars($message) ?>
+                        </div>
+                    <?php endif; ?>
                 
                     <form method="POST" action="" id="scheduleForm" onsubmit="return confirmSave(event, this, 'save this schedule')">
                         <input type="hidden" name="action" id="form-action" value="add_schedule">
@@ -342,13 +260,21 @@ $schedules = $schedStmt->fetchAll();
                             <label>Room</label>
                             <select name="room_id" id="form-room" required>
                                 <?php
-                                $all_rooms = array_merge(
+                                $hardcoded_rooms = array_merge(
                                     ['101','102','103','104','105','106','107','108'],
                                     ['201','202','203','204','205','206','207','208'],
                                     ['301','302','303','304','305','306','307','308','309']
                                 );
+                                
+                                $doorStmt = $pdo->query("SELECT room_id FROM door_status");
+                                $existing_rooms = $doorStmt->fetchAll(PDO::FETCH_COLUMN);
+                                
+                                $all_rooms = array_unique(array_merge($hardcoded_rooms, $existing_rooms));
+                                sort($all_rooms);
+
                                 foreach($all_rooms as $r) {
-                                    echo "<option value=\"ICT $r\">ICT $r</option>";
+                                    $val = htmlspecialchars($r);
+                                    echo "<option value=\"$val\">$val</option>";
                                 }
                                 ?>
                             </select>
@@ -398,7 +324,7 @@ $schedules = $schedStmt->fetchAll();
                 </div>
             </div>
 
-            <!-- Col 3: Schedule List -->
+            <!-- Col 2: Schedule List -->
             <div>
                 <div class="card" style="margin: 0; height: 100%; max-height: 85vh; display: flex; flex-direction: column;">
                     <div class="card-header">
@@ -421,9 +347,9 @@ $schedules = $schedStmt->fetchAll();
                                 <?php else: ?>
                                     <?php foreach($schedules as $sched): ?>
                                     <tr style="box-shadow: 0 2px 4px rgba(0,0,0,0.05); background: #f8fafc;">
-                                        <td style="padding: 0.75rem; font-weight: bold; border-radius: 0.5rem 0 0 0.5rem;"><?= htmlspecialchars($sched['subject_code']) ?></td>
-                                        <td style="padding: 0.75rem;"><?= htmlspecialchars($sched['section']) ?></td>
-                                        <td style="padding: 0.75rem;"><?= htmlspecialchars($sched['teacher_name']) ?></td>
+                                        <td style="padding: 0.75rem; font-weight: bold; border-radius: 0.5rem 0 0 0.5rem; color: #333;"><?= htmlspecialchars($sched['subject_code']) ?></td>
+                                        <td style="padding: 0.75rem; color: #333;"><?= htmlspecialchars($sched['section']) ?></td>
+                                        <td style="padding: 0.75rem; color: #333;"><?= htmlspecialchars($sched['teacher_name']) ?></td>
                                         <td style="padding: 0.75rem;">
                                             <div style="font-weight: bold; color: var(--accent-blue);"><?= htmlspecialchars($sched['room_id']) ?></div>
                                             <div style="font-size: 0.75rem; color: #64748b;"><?= $sched['day_of_week'] ?>, <?= date('g:i A', strtotime($sched['start_time'])) ?> - <?= date('g:i A', strtotime($sched['end_time'])) ?></div>
@@ -446,97 +372,6 @@ $schedules = $schedStmt->fetchAll();
             </div>
             
         </div>
-
-        <!-- BOTTOM SECTION: 2 Columns -->
-        <div class="schedule-bottom-grid">
-            
-            <!-- Col 1: Student User Management -->
-            <div>
-                <div class="card" style="margin: 0;">
-                    <div class="card-header" style="border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 0.5rem; margin-bottom: 1rem;">
-                        <h2>User Management</h2>
-                        <span style="font-weight: bold; color: var(--accent-yellow); font-size: 0.875rem;">Students</span>
-                    </div>
-                    
-                    <div style="overflow-x: auto; max-height: 50vh; overflow-y: auto;">
-                        <table class="modern-table" style="width: 100%; border-spacing: 0 0.5rem; border-collapse: separate; font-size: 0.875rem;">
-                            <thead>
-                                <tr>
-                                    <th style="border: none; background: #e2e8f0; text-align: left; padding: 0.5rem; border-radius: 0.5rem 0 0 0.5rem;">Name</th>
-                                    <th style="border: none; background: #e2e8f0; text-align: center; padding: 0.5rem; border-radius: 0 0.5rem 0.5rem 0; width: 130px;">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach($students as $st): ?>
-                                <tr style="background: #f8fafc;">
-                                    <td style="padding: 0.5rem; border-radius: 0.5rem 0 0 0.5rem;">
-                                        <div style="font-weight: bold; color: #333;"><?= htmlspecialchars($st['full_name']) ?></div>
-                                        <div style="font-size: 0.75rem; color: #64748b;"><?= htmlspecialchars($st['email']) ?></div>
-                                        <div style="font-size: 0.75rem; color: #64748b;"><?= htmlspecialchars($st['section']) ?></div>
-                                    </td>
-                                    <td style="padding: 0.5rem; text-align: center; border-radius: 0 0.5rem 0.5rem 0; white-space: nowrap;">
-                                        <button class="action-btn" title="Edit" onclick="openEditUserModal(<?= $st['id'] ?>, 'student', '<?= htmlspecialchars(addslashes($st['full_name'])) ?>', '<?= htmlspecialchars(addslashes($st['email'])) ?>', '<?= htmlspecialchars(addslashes($st['section'])) ?>', '')">
-                                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                                        </button>
-                                        <button class="action-btn" title="Reset Password" onclick="openPasswordModal(<?= $st['id'] ?>, '<?= htmlspecialchars(addslashes($st['full_name'])) ?>')">
-                                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
-                                        </button>
-                                        <button class="action-btn delete" title="Delete" onclick="deleteUser(<?= $st['id'] ?>)">
-                                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                                        </button>
-                                    </td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Col 2: Teacher User Management -->
-            <div>
-                <div class="card" style="margin: 0;">
-                    <div class="card-header" style="border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 0.5rem; margin-bottom: 1rem;">
-                        <h2>User Management</h2>
-                        <span style="font-weight: bold; color: var(--accent-yellow); font-size: 0.875rem;">Teachers</span>
-                    </div>
-                    
-                    <div style="overflow-x: auto; max-height: 50vh; overflow-y: auto;">
-                        <table class="modern-table" style="width: 100%; border-spacing: 0 0.5rem; border-collapse: separate; font-size: 0.875rem;">
-                            <thead>
-                                <tr>
-                                    <th style="border: none; background: #e2e8f0; text-align: left; padding: 0.5rem; border-radius: 0.5rem 0 0 0.5rem;">Name</th>
-                                    <th style="border: none; background: #e2e8f0; text-align: center; padding: 0.5rem; border-radius: 0 0.5rem 0.5rem 0; width: 130px;">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach($teachers as $tc): ?>
-                                <tr style="background: #f8fafc;">
-                                    <td style="padding: 0.5rem; border-radius: 0.5rem 0 0 0.5rem;">
-                                        <div style="font-weight: bold; color: #333;"><?= htmlspecialchars($tc['full_name']) ?></div>
-                                        <div style="font-size: 0.75rem; color: #64748b;"><?= htmlspecialchars($tc['email']) ?></div>
-                                        <div style="font-size: 0.75rem; color: #64748b;"><?= htmlspecialchars($tc['academic_rank'] ?? 'N/A') ?></div>
-                                    </td>
-                                    <td style="padding: 0.5rem; text-align: center; border-radius: 0 0.5rem 0.5rem 0; white-space: nowrap;">
-                                        <button class="action-btn" title="Edit" onclick="openEditUserModal(<?= $tc['id'] ?>, 'teacher', '<?= htmlspecialchars(addslashes($tc['full_name'])) ?>', '<?= htmlspecialchars(addslashes($tc['email'])) ?>', '', '<?= htmlspecialchars(addslashes($tc['academic_rank'] ?? '')) ?>')">
-                                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                                        </button>
-                                        <button class="action-btn" title="Reset Password" onclick="openPasswordModal(<?= $tc['id'] ?>, '<?= htmlspecialchars(addslashes($tc['full_name'])) ?>')">
-                                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
-                                        </button>
-                                        <button class="action-btn delete" title="Delete" onclick="deleteUser(<?= $tc['id'] ?>)">
-                                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                                        </button>
-                                    </td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-        </div>
     </div>
 </main>
 
@@ -545,88 +380,7 @@ $schedules = $schedStmt->fetchAll();
     <input type="hidden" name="schedule_id" id="delete_schedule_id" value="">
 </form>
 
-<!-- Reset Password Modal -->
-<div id="passwordModal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3>Reset Password</h3>
-            <button class="close-btn" onclick="document.getElementById('passwordModal').style.display='none'">&times;</button>
-        </div>
-        <form id="passwordForm" onsubmit="submitPasswordReset(event)">
-            <input type="hidden" id="reset_user_id" name="user_id">
-            <p style="margin-bottom: 1rem; color: #64748b; font-size: 0.875rem;">Resetting password for: <strong id="reset_user_name" style="color: #333;"></strong></p>
-            <div class="form-group">
-                <label style="color: #333;">New Password</label>
-                <input type="password" id="new_password" required>
-            </div>
-            <button type="submit" class="btn btn-primary" style="width: 100%; border-radius: 0.5rem;">Update Password</button>
-        </form>
-    </div>
-</div>
-
-<!-- Edit User Modal -->
-<div id="editUserModal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3>Edit User</h3>
-            <button class="close-btn" onclick="document.getElementById('editUserModal').style.display='none'">&times;</button>
-        </div>
-        <form id="editUserForm" onsubmit="submitEditUser(event)">
-            <input type="hidden" id="edit_user_id" name="user_id">
-            
-            <div class="form-group">
-                <label style="color: #333;">Full Name</label>
-                <input type="text" id="edit_full_name" required>
-            </div>
-            <div class="form-group">
-                <label style="color: #333;">Email</label>
-                <input type="email" id="edit_email" required>
-            </div>
-            
-            <div class="form-group" id="edit_section_group" style="display: none;">
-                <label style="color: #333;">Section</label>
-                <input type="text" id="edit_section">
-            </div>
-            <div class="form-group" id="edit_rank_group" style="display: none;">
-                <label style="color: #333;">Academic Rank</label>
-                <select id="edit_academic_rank">
-                    <option value="">Select Rank...</option>
-                    <option value="Instructor I">Instructor I</option>
-                    <option value="Instructor II">Instructor II</option>
-                    <option value="Instructor III">Instructor III</option>
-                    <option value="Assistant Professor I">Assistant Professor I</option>
-                    <option value="Assistant Professor II">Assistant Professor II</option>
-                    <option value="Assistant Professor III">Assistant Professor III</option>
-                    <option value="Assistant Professor IV">Assistant Professor IV</option>
-                    <option value="Associate Professor I">Associate Professor I</option>
-                    <option value="Associate Professor II">Associate Professor II</option>
-                    <option value="Associate Professor III">Associate Professor III</option>
-                    <option value="Associate Professor IV">Associate Professor IV</option>
-                    <option value="Associate Professor V">Associate Professor V</option>
-                    <option value="Professor I">Professor I</option>
-                    <option value="Professor II">Professor II</option>
-                    <option value="Professor III">Professor III</option>
-                    <option value="Professor IV">Professor IV</option>
-                    <option value="Professor V">Professor V</option>
-                    <option value="Professor VI">Professor VI</option>
-                </select>
-            </div>
-            <button type="submit" class="btn btn-primary" style="width: 100%; border-radius: 0.5rem;">Update User</button>
-        </form>
-    </div>
-</div>
-
 <script>
-    <?php if ($message): ?>
-    Swal.fire({
-        icon: '<?= $message_type ?>',
-        title: '<?= $message_type === "success" ? "Success!" : "Error!" ?>',
-        text: '<?= addslashes($message) ?>',
-        showConfirmButton: false,
-        timer: 2000
-    });
-    <?php endif; ?>
-
     function confirmSave(e, form, actionText) {
         e.preventDefault();
         Swal.fire({
@@ -661,7 +415,6 @@ $schedules = $schedStmt->fetchAll();
         document.getElementById('form-submit-btn').innerText = "Update Schedule";
         document.getElementById('form-cancel-btn').style.display = "block";
         
-        // Scroll to form
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
@@ -674,151 +427,6 @@ $schedules = $schedStmt->fetchAll();
         
         document.getElementById('form-submit-btn').innerText = "Save Schedule";
         document.getElementById('form-cancel-btn').style.display = "none";
-    }
-
-    function openPasswordModal(userId, userName) {
-        document.getElementById('reset_user_id').value = userId;
-        document.getElementById('reset_user_name').innerText = userName;
-        document.getElementById('new_password').value = '';
-        document.getElementById('passwordModal').style.display = 'flex';
-    }
-
-    function submitPasswordReset(e) {
-        e.preventDefault();
-        const userId = document.getElementById('reset_user_id').value;
-        const newPassword = document.getElementById('new_password').value;
-
-        fetch('../../api/manage_user.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                action: 'reset_password',
-                user_id: userId,
-                password: newPassword
-            })
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                Swal.fire({
-                    icon: 'success',
-                    title: 'Success!',
-                    text: 'Password reset successfully!',
-                    showConfirmButton: false,
-                    timer: 2000
-                }).then(() => {
-                    document.getElementById('passwordModal').style.display = 'none';
-                });
-            } else {
-                Swal.fire('Error', data.message, 'error');
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            Swal.fire('Error', 'An error occurred while resetting the password.', 'error');
-        });
-    }
-
-    function openEditUserModal(id, role, name, email, section, rank) {
-        document.getElementById('edit_user_id').value = id;
-        document.getElementById('edit_full_name').value = name;
-        document.getElementById('edit_email').value = email;
-        
-        if (role === 'student') {
-            document.getElementById('edit_section_group').style.display = 'block';
-            document.getElementById('edit_rank_group').style.display = 'none';
-            document.getElementById('edit_section').value = section;
-            document.getElementById('edit_academic_rank').value = '';
-        } else {
-            document.getElementById('edit_section_group').style.display = 'none';
-            document.getElementById('edit_rank_group').style.display = 'block';
-            document.getElementById('edit_section').value = '';
-            document.getElementById('edit_academic_rank').value = rank;
-        }
-        
-        document.getElementById('editUserModal').style.display = 'flex';
-    }
-
-    function submitEditUser(e) {
-        e.preventDefault();
-        
-        fetch('../../api/manage_user.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                action: 'edit_user',
-                user_id: document.getElementById('edit_user_id').value,
-                full_name: document.getElementById('edit_full_name').value,
-                email: document.getElementById('edit_email').value,
-                section: document.getElementById('edit_section').value,
-                academic_rank: document.getElementById('edit_academic_rank').value
-            })
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                Swal.fire({
-                    icon: 'success',
-                    title: 'Success!',
-                    text: 'User updated successfully!',
-                    showConfirmButton: false,
-                    timer: 2000
-                }).then(() => {
-                    window.location.reload();
-                });
-            } else {
-                Swal.fire('Error', data.message, 'error');
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            Swal.fire('Error', 'An error occurred while updating the user.', 'error');
-        });
-    }
-
-    function deleteUser(userId) {
-        Swal.fire({
-            title: 'Are you sure?',
-            text: 'You will not be able to recover this user!',
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonColor: '#ef4444',
-            cancelButtonColor: '#64748b',
-            confirmButtonText: 'Yes, delete it!'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                fetch('../../api/manage_user.php', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        action: 'delete_user',
-                        user_id: userId
-                    })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        Swal.fire({
-                            icon: 'success',
-                            title: 'Deleted!',
-                            text: 'User has been deleted.',
-                            showConfirmButton: false,
-                            timer: 2000
-                        }).then(() => {
-                            window.location.reload();
-                        });
-                    } else {
-                        Swal.fire('Error', data.message, 'error');
-                    }
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-                    Swal.fire('Error', 'An error occurred while deleting the user.', 'error');
-                });
-            }
-        });
     }
 
     function deleteSchedule(scheduleId) {
@@ -835,6 +443,71 @@ $schedules = $schedStmt->fetchAll();
                 document.getElementById('delete_schedule_id').value = scheduleId;
                 document.getElementById('deleteScheduleForm').submit();
             }
+        });
+    }
+
+    function scanSchedule() {
+        const fileInput = document.getElementById('schedule-image');
+        if (!fileInput.files.length) {
+            Swal.fire('Error', 'Please select an image file first.', 'error');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('image', fileInput.files[0]);
+
+        const btn = document.getElementById('scan-btn');
+        btn.innerHTML = '<span class="loading-spinner"></span> Scanning...';
+        btn.disabled = true;
+
+        fetch(`http://${window.location.hostname}:8000/ocr_schedule`, {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.data) {
+                const parsed = data.data;
+                
+                if (parsed.subject) document.getElementById('form-subject').value = parsed.subject;
+                if (parsed.section) document.getElementById('form-section').value = parsed.section;
+                if (parsed.teacher) document.getElementById('form-teacher').value = parsed.teacher;
+                if (parsed.room) document.getElementById('form-room').value = parsed.room;
+                if (parsed.day) document.getElementById('form-day').value = parsed.day;
+                
+                // Assuming format HH:MM:SS is returned for start and end
+                if (parsed.start_time) {
+                    const startEl = document.getElementById('form-start');
+                    for (let opt of startEl.options) {
+                        if (opt.value.startsWith(parsed.start_time)) {
+                            startEl.value = opt.value;
+                            break;
+                        }
+                    }
+                }
+                if (parsed.end_time) {
+                    const endEl = document.getElementById('form-end');
+                    for (let opt of endEl.options) {
+                        if (opt.value.startsWith(parsed.end_time)) {
+                            endEl.value = opt.value;
+                            break;
+                        }
+                    }
+                }
+
+                document.getElementById('scan-result').style.display = 'block';
+                document.getElementById('scan-result').innerText = 'Scan successful! Data applied below. Please review.';
+            } else {
+                Swal.fire('Error', data.message || 'Failed to extract data from image.', 'error');
+            }
+        })
+        .catch(err => {
+            console.error(err);
+            Swal.fire('Error', 'Failed to connect to the OCR server.', 'error');
+        })
+        .finally(() => {
+            btn.innerHTML = 'Scan Image';
+            btn.disabled = false;
         });
     }
 </script>

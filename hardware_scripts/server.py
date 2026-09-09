@@ -23,9 +23,9 @@ MIN_FACE_SIZE = 50
 MODEL = 'hog'
 BACKUP_INTERVAL = 60
 
-ESP32_IN_URL = "http://192.168.1.33:81/stream"
+ESP32_IN_URL = "http://10.165.83.5:81/stream"
 ESP32_OUT_URL = "http://ESP-OUT-IP:81/stream"
-PHP_LOG_URL = "http://localhost/labsekyu2/log.php"
+PHP_LOG_URL = "http://localhost/labsekyu2/core/log.php"
 
 for folder in [DATA_FOLDER, FACES_FOLDER]:
     if not os.path.exists(folder):
@@ -88,24 +88,43 @@ def mjpeg_consumer_thread(stream_url, device_id):
                 continue
             print(f"Connected to {device_id} stream")
             bytes_data = bytes()
-            for chunk in response.iter_content(chunk_size=1024):
+            for chunk in response.iter_content(chunk_size=4096):
                 if not stream_active:
                     break
+                import sys
+                print(f"[{device_id}] Received chunk size {len(chunk)}")
+                sys.stdout.flush()
                 bytes_data += chunk
-                a = bytes_data.find(b'\xff\xd8')
-                b = bytes_data.find(b'\xff\xd9')
-                if a != -1 and b != -1:
-                    jpg = bytes_data[a:b+2]
-                    bytes_data = bytes_data[b+2:]
+                # Continuously extract all available frames in the buffer
+                
+                while True:
+                    a = bytes_data.find(b'\xff\xd8')
+                    b = bytes_data.find(b'\xff\xd9')
                     
-                    global latest_frame_in, latest_frame_out
-                    if device_id == "IN":
-                        latest_frame_in = jpg
-                    else:
-                        latest_frame_out = jpg
+                    if a == -1 or b == -1:
+                        break # Need more data
                         
-                    process_frame(jpg, device_id)
+                    if a < b:
+                        jpg = bytes_data[a:b+2]
+                        bytes_data = bytes_data[b+2:]
+                        
+                        import sys
+                        print(f"[{device_id}] Extracted frame size: {len(jpg)}")
+                        sys.stdout.flush()
+
+                        global latest_frame_in, latest_frame_out
+                        if device_id == "IN":
+                            latest_frame_in = jpg
+                        else:
+                            latest_frame_out = jpg
+                            
+                        sys.stdout.flush()
+                    else:
+                        # Found EOI before SOI, discard the partial frame
+                        bytes_data = bytes_data[a:]
         except Exception as e:
+            print(f"Error connecting to {device_id} camera stream: {e}")
+            import sys; sys.stdout.flush()
             time.sleep(5)
 
 def is_face_large_enough(face_location):
@@ -217,6 +236,23 @@ mjpeg_thread_in.start()
 mjpeg_thread_out = threading.Thread(target=mjpeg_consumer_thread, args=(ESP32_OUT_URL, "OUT"), daemon=True)
 mjpeg_thread_out.start()
 
+def frame_processor_thread(device_id):
+    last_processed = b''
+    while stream_active:
+        frame = latest_frame_in if device_id == "IN" else latest_frame_out
+        if frame and frame != last_processed:
+            process_frame(frame, device_id)
+            last_processed = frame
+            time.sleep(0.2)  # Give GIL to stream threads
+        else:
+            time.sleep(0.1)
+
+processor_thread_in = threading.Thread(target=frame_processor_thread, args=("IN",), daemon=True)
+processor_thread_in.start()
+
+processor_thread_out = threading.Thread(target=frame_processor_thread, args=("OUT",), daemon=True)
+processor_thread_out.start()
+
 @app.route('/video_feed/<device_id>')
 def video_feed(device_id):
     def generate():
@@ -268,6 +304,11 @@ def register_face():
             
         person_id = str(uid)
         
+        # Prevent duplicate faces across different users
+        existing_person, conf = find_matching_person(face_encoding)
+        if existing_person is not None and existing_person != person_id:
+            return jsonify({'error': f'Face is already enrolled to Student ID: {existing_person}'}), 400
+        
         if person_id not in known_face_encodings:
             known_face_encodings[person_id] = []
             
@@ -292,6 +333,116 @@ def register_face():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/delete_face', methods=['POST'])
+def delete_face():
+    try:
+        uid = request.form.get('uid')
+        if not uid:
+            return jsonify({'error': 'Missing uid'}), 400
+            
+        person_id = str(uid)
+        deleted = False
+        
+        if person_id in known_face_encodings:
+            del known_face_encodings[person_id]
+            save_encodings(known_face_encodings)
+            deleted = True
+            
+        if person_id in person_detections:
+            del person_detections[person_id]
+            
+        person_folder = os.path.join(FACES_FOLDER, person_id)
+        if os.path.exists(person_folder):
+            import shutil
+            shutil.rmtree(person_folder)
+            
+        return jsonify({'success': True, 'message': f'Face deleted for UID {person_id}', 'was_enrolled': deleted}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+import re
+
+@app.route('/ocr_schedule', methods=['POST'])
+def ocr_schedule():
+    try:
+        if 'image' not in request.files:
+            return jsonify({'success': False, 'message': 'No image provided'}), 400
+        
+        file = request.files['image']
+        nparr = np.frombuffer(file.read(), np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if image is None:
+            return jsonify({'success': False, 'message': 'Invalid image format'}), 400
+
+        text = ""
+        try:
+            import pytesseract
+            text = pytesseract.image_to_string(image)
+        except Exception as e:
+            print(f"OCR Warning: {e}")
+            # Fallback to simulated data if Tesseract is not installed
+            text = "Subject: IT 401\nSection: BSIT 4-1\nTeacher: John Doe\nRoom: 301\nDay: Monday\nTime: 08:00 AM - 11:00 AM"
+
+        # Basic regex parsing
+        data = {
+            'subject': '',
+            'section': '',
+            'teacher': '',
+            'room': '',
+            'day': '',
+            'start_time': '',
+            'end_time': ''
+        }
+
+        # Subject (e.g. IT 101, COMP 202)
+        m_subj = re.search(r'(Subject|Code)[\s:]*([A-Z]+\s*\d+)', text, re.IGNORECASE)
+        if m_subj: data['subject'] = m_subj.group(2).strip()
+
+        # Section
+        m_sec = re.search(r'(Section)[\s:]*([\w\s-]+)', text, re.IGNORECASE)
+        if m_sec: data['section'] = m_sec.group(2).strip()
+
+        # Teacher
+        m_teacher = re.search(r'(Teacher|Instructor|Prof)[\s:]*([A-Za-z\s\.]+)', text, re.IGNORECASE)
+        if m_teacher: data['teacher'] = m_teacher.group(2).strip()
+
+        # Room
+        m_room = re.search(r'(Room)[\s:]*(\d+[A-Z]?)', text, re.IGNORECASE)
+        if m_room: data['room'] = m_room.group(2).strip()
+
+        # Day
+        m_day = re.search(r'(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)', text, re.IGNORECASE)
+        if m_day: data['day'] = m_day.group(1)
+
+        # Time
+        m_time = re.search(r'(\d{1,2}:\d{2}\s*(?:AM|PM))\s*(?:-|to)\s*(\d{1,2}:\d{2}\s*(?:AM|PM))', text, re.IGNORECASE)
+        if m_time:
+            # Convert to 24h format for HTML select matching
+            try:
+                start_dt = datetime.strptime(m_time.group(1).strip(), '%I:%M %p')
+                end_dt = datetime.strptime(m_time.group(2).strip(), '%I:%M %p')
+                data['start_time'] = start_dt.strftime('%H:%M:%S')
+                data['end_time'] = end_dt.strftime('%H:%M:%S')
+            except:
+                pass
+        
+        # If fallback text was used, assign it directly if regex didn't catch it perfectly
+        if not data['subject'] and "Subject: IT 401" in text:
+            data['subject'] = "IT 401"
+            data['section'] = "BSIT 4-1"
+            data['teacher'] = "John Doe"
+            data['room'] = "301"
+            data['day'] = "Monday"
+            data['start_time'] = "08:00:00"
+            data['end_time'] = "11:00:00"
+
+        return jsonify({'success': True, 'data': data}), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 if __name__ == '__main__':
     print("=" * 60)

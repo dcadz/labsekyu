@@ -26,13 +26,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $sweetalert_message = 'Failed to submit ticket.';
             }
         }
+    } elseif ($_POST['action'] === 'delete_report') {
+        $report_id = $_POST['report_id'] ?? '';
+        if ($report_id) {
+            $del = $pdo->prepare("DELETE FROM teacher_alerts WHERE id = ? AND teacher_id = ?");
+            if ($del->execute([$report_id, $teacher_id])) {
+                $sweetalert_type = 'success';
+                $sweetalert_message = 'Report deleted successfully.';
+            } else {
+                $sweetalert_type = 'error';
+                $sweetalert_message = 'Failed to delete report.';
+            }
+        }
     }
 }
 
-// Fetch teacher's assigned rooms for the dropdown
-$roomStmt = $pdo->prepare("SELECT DISTINCT room_id as room FROM class_schedules WHERE teacher_id = ?");
-$roomStmt->execute([$teacher_id]);
-$teacher_rooms = $roomStmt->fetchAll(PDO::FETCH_COLUMN);
+// Fetch all available rooms from tech support (door_status)
+$roomStmt = $pdo->query("SELECT DISTINCT room_id as room FROM door_status ORDER BY room_id ASC");
+$all_rooms = $roomStmt->fetchAll(PDO::FETCH_COLUMN);
 
 // Fetch teacher's ticket history
 $myReportsStmt = $pdo->prepare("SELECT * FROM teacher_alerts WHERE teacher_id = ? ORDER BY created_at DESC");
@@ -177,7 +188,7 @@ $system_alerts = $sysStmt->fetchAll();
                         <label style="color: var(--text-secondary);">Select Room</label>
                         <select name="room" required style="background: rgba(255, 255, 255, 0.05); color: #fff; border: 1px solid var(--border-color);">
                             <option value="" style="color: #000;">-- Choose a Room --</option>
-                            <?php foreach($teacher_rooms as $rm): ?>
+                            <?php foreach($all_rooms as $rm): ?>
                                 <option value="<?= htmlspecialchars($rm) ?>" style="color: #000;"><?= htmlspecialchars($rm) ?></option>
                             <?php endforeach; ?>
                         </select>
@@ -220,8 +231,15 @@ $system_alerts = $sysStmt->fetchAll();
                                 <?= htmlspecialchars($rep['message']) ?>
                             </div>
                         </div>
-                        <div class="alert-time">
-                            <?= date('M d, Y g:i A', strtotime($rep['created_at'])) ?>
+                        <div class="alert-time" style="display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem;">
+                            <span><?= date('M d, Y g:i A', strtotime($rep['created_at'])) ?></span>
+                            <form method="POST" action="" onsubmit="return confirm('Are you sure you want to delete this report?');">
+                                <input type="hidden" name="action" value="delete_report">
+                                <input type="hidden" name="report_id" value="<?= $rep['id'] ?>">
+                                <button type="submit" style="background: none; border: none; color: var(--accent-red); cursor: pointer; padding: 0.25rem;">
+                                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                </button>
+                            </form>
                         </div>
                     </div>
                     <?php endforeach; ?>

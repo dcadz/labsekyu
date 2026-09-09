@@ -6,8 +6,9 @@ require_once __DIR__ . '/../../core/db_connect.php';
 
 $teacher_id = $_SESSION['user_id'];
 $message = '';
+$message_type = 'success';
 
-// Fetch system alerts count targeted to rooms assigned to this teacher
+// Fetch system alerts count
 $sysAlertsCountStmt = $pdo->prepare("
     SELECT COUNT(DISTINCT sa.alert_id) 
     FROM system_alerts sa
@@ -22,24 +23,71 @@ $sysAlertsCountStmt = $pdo->prepare("
 $sysAlertsCountStmt->execute([':teacher_id' => $teacher_id]);
 $teacherAlertCount = $sysAlertsCountStmt->fetchColumn();
 
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
+    $action = $_POST['action'];
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'add') {
-    $subject_code = trim($_POST['subject_code'] ?? '');
-    $section = trim($_POST['section'] ?? '');
-    $room_id = trim($_POST['room_id'] ?? 'ICT Lab 1'); // Defaulting to ICT Lab 1 for now
-    $day_of_week = $_POST['day_of_week'] ?? '';
-    $start_time = $_POST['start_time'] ?? '';
-    $end_time = $_POST['end_time'] ?? '';
-
-    if ($subject_code && $section && $room_id && $day_of_week && $start_time && $end_time) {
-        $stmt = $pdo->prepare("INSERT INTO class_schedules (subject_code, section, teacher_id, room_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?, ?, ?, ?)");
-        if ($stmt->execute([$subject_code, $section, $teacher_id, $room_id, $day_of_week, $start_time, $end_time])) {
-            $message = "<div style='color: var(--accent-green); margin-bottom: 1rem;'>Schedule added successfully!</div>";
-        } else {
-            $message = "<div style='color: var(--accent-red); margin-bottom: 1rem;'>Error adding schedule.</div>";
+    if ($action === 'delete') {
+        $schedule_id = $_POST['schedule_id'] ?? '';
+        if ($schedule_id) {
+            $stmt = $pdo->prepare("DELETE FROM class_schedules WHERE schedule_id = ? AND teacher_id = ?");
+            if ($stmt->execute([$schedule_id, $teacher_id])) {
+                $message = "Schedule deleted successfully!";
+            } else {
+                $message = "Error deleting schedule.";
+                $message_type = "error";
+            }
         }
-    } else {
-        $message = "<div style='color: var(--accent-red); margin-bottom: 1rem;'>Please fill in all required fields.</div>";
+    } elseif ($action === 'add' || $action === 'edit') {
+        $subject_code = trim($_POST['subject_code'] ?? '');
+        $section = trim($_POST['section'] ?? '');
+        $room_id = trim($_POST['room_id'] ?? 'ICT Lab 1');
+        $day_of_week = $_POST['day_of_week'] ?? '';
+        $start_time = $_POST['start_time'] ?? '';
+        $end_time = $_POST['end_time'] ?? '';
+        $schedule_id = $_POST['schedule_id'] ?? '';
+
+        if ($subject_code && $section && $room_id && $day_of_week && $start_time && $end_time) {
+            
+            // Check overlaps
+            $overlapQuery = "SELECT schedule_id FROM class_schedules 
+                             WHERE room_id = ? AND day_of_week = ? 
+                             AND ((start_time < ? AND end_time > ?) OR (start_time < ? AND end_time > ?) OR (start_time >= ? AND end_time <= ?))";
+            $overlapParams = [$room_id, $day_of_week, $end_time, $start_time, $end_time, $start_time, $start_time, $end_time];
+            
+            if ($action === 'edit' && !empty($schedule_id)) {
+                $overlapQuery .= " AND schedule_id != ?";
+                $overlapParams[] = $schedule_id;
+            }
+
+            $overlapStmt = $pdo->prepare($overlapQuery);
+            $overlapStmt->execute($overlapParams);
+            
+            if ($overlapStmt->fetch()) {
+                $message = "Error: This schedule conflicts with an existing class in $room_id on $day_of_week during this time!";
+                $message_type = "error";
+            } else {
+                if ($action === 'add') {
+                    $stmt = $pdo->prepare("INSERT INTO class_schedules (subject_code, section, teacher_id, room_id, day_of_week, start_time, end_time) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                    if ($stmt->execute([$subject_code, $section, $teacher_id, $room_id, $day_of_week, $start_time, $end_time])) {
+                        $message = "Schedule added successfully!";
+                    } else {
+                        $message = "Error adding schedule.";
+                        $message_type = "error";
+                    }
+                } else if ($action === 'edit') {
+                    $stmt = $pdo->prepare("UPDATE class_schedules SET subject_code=?, section=?, room_id=?, day_of_week=?, start_time=?, end_time=? WHERE schedule_id=? AND teacher_id=?");
+                    if ($stmt->execute([$subject_code, $section, $room_id, $day_of_week, $start_time, $end_time, $schedule_id, $teacher_id])) {
+                        $message = "Schedule updated successfully!";
+                    } else {
+                        $message = "Error updating schedule.";
+                        $message_type = "error";
+                    }
+                }
+            }
+        } else {
+            $message = "Please fill in all required fields.";
+            $message_type = "error";
+        }
     }
 }
 
@@ -55,6 +103,7 @@ $schedules = $schedStmt->fetchAll();
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Manage Schedule | LABSEKYU</title>
     <link rel="stylesheet" href="../../assets/css/dashboard.css">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
         .form-grid {
             display: grid;
@@ -89,6 +138,15 @@ $schedules = $schedStmt->fetchAll();
             cursor: pointer;
             width: 100%;
         }
+        .btn-cancel {
+            background: #e2e8f0;
+            color: #333;
+            margin-top: 0.5rem;
+            display: none;
+        }
+        .action-btn { background: none; border: none; cursor: pointer; color: var(--text-secondary); display: inline-flex; align-items: center; justify-content: center; padding: 0.25rem; }
+        .action-btn:hover { color: var(--accent-blue); }
+        .action-btn.delete:hover { color: var(--accent-red); }
     </style>
 </head>
 <body>
@@ -126,34 +184,43 @@ $schedules = $schedStmt->fetchAll();
 <main class="main-content">
     <div class="dashboard-container" style="max-width: 1000px; display: grid; gap: 2rem; grid-template-columns: 1fr 1fr;">
         
-        <!-- Add Schedule Form -->
-        <div class="card">
+        <!-- Add/Edit Schedule Form -->
+        <div class="card" style="height: fit-content;">
             <div class="card-header">
-                <h2>Add Class Schedule</h2>
+                <h2 id="form-title">Add Class Schedule</h2>
             </div>
-            <?= $message ?>
-            <form method="POST" action="">
-                <input type="hidden" name="action" value="add">
+            
+            <?php if ($message): ?>
+                <div style="background: <?= $message_type === 'success' ? 'rgba(34, 197, 94, 0.2)' : 'rgba(239, 68, 68, 0.2)' ?>; color: <?= $message_type === 'success' ? '#10b981' : '#ef4444' ?>; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem;">
+                    <?= htmlspecialchars($message) ?>
+                </div>
+            <?php endif; ?>
+
+            <form method="POST" action="" id="scheduleForm">
+                <input type="hidden" name="action" id="form-action" value="add">
+                <input type="hidden" name="schedule_id" id="form-schedule-id" value="">
                 
                 <div class="form-group">
                     <label>Subject Code</label>
-                    <input type="text" name="subject_code" placeholder="e.g. IT 312" required>
+                    <input type="text" name="subject_code" id="form-subject" placeholder="e.g. IT 312" required>
                 </div>
                 
                 <div class="form-group">
                     <label>Section</label>
-                    <input type="text" name="section" placeholder="e.g. BSIT 3-A" required>
+                    <input type="text" name="section" id="form-section" placeholder="e.g. BSIT 3-A" required>
                 </div>
                 
                 <div class="form-group">
                     <label>Room</label>
-                    <input type="text" name="room_id" value="ICT Lab 1" required>
+                    <select name="room_id" id="room_select" required>
+                        <option value="">Loading rooms...</option>
+                    </select>
                 </div>
                 
                 <div class="form-grid">
                     <div class="form-group">
                         <label>Day of Week</label>
-                        <select name="day_of_week" required>
+                        <select name="day_of_week" id="form-day" required>
                             <option value="Monday">Monday</option>
                             <option value="Tuesday">Tuesday</option>
                             <option value="Wednesday">Wednesday</option>
@@ -165,57 +232,174 @@ $schedules = $schedStmt->fetchAll();
                     
                     <div class="form-group">
                         <label>Start Time</label>
-                        <input type="time" name="start_time" required>
+                        <select name="start_time" id="form-start" required>
+                            <?php
+                            $start = strtotime('07:00');
+                            $end = strtotime('21:00');
+                            for ($i = $start; $i <= $end; $i += 1800) {
+                                $val = date('H:i:s', $i);
+                                $label = date('h:i A', $i);
+                                echo "<option value=\"$val\">$label</option>";
+                            }
+                            ?>
+                        </select>
                     </div>
                     
                     <div class="form-group" style="grid-column: 2;">
                         <label>End Time</label>
-                        <input type="time" name="end_time" required>
+                        <select name="end_time" id="form-end" required>
+                            <?php
+                            for ($i = $start; $i <= $end; $i += 1800) {
+                                $val = date('H:i:s', $i);
+                                $label = date('h:i A', $i);
+                                echo "<option value=\"$val\">$label</option>";
+                            }
+                            ?>
+                        </select>
                     </div>
                 </div>
                 
-                <button type="submit" class="btn-submit">Add Schedule</button>
+                <button type="submit" class="btn-submit" id="form-submit-btn">Save Schedule</button>
+                <button type="button" class="btn-submit btn-cancel" id="form-cancel-btn" onclick="resetForm()">Cancel Edit</button>
             </form>
         </div>
 
         <!-- My Schedules -->
-        <div class="card" style="height: fit-content;">
+        <div class="card" style="height: fit-content; max-height: 85vh; display: flex; flex-direction: column;">
             <div class="card-header">
                 <h2>My Schedules</h2>
             </div>
-            <table class="modern-table" style="width: 100%; text-align: left;">
-                <thead>
-                    <tr style="border-bottom: 1px solid var(--border-color);">
-                        <th style="padding: 1rem; color: var(--text-secondary);">Class</th>
-                        <th style="padding: 1rem; color: var(--text-secondary);">Day & Time</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php if (empty($schedules)): ?>
-                        <tr>
-                            <td colspan="2" style="padding: 1rem; text-align: center; color: var(--text-secondary);">No schedules added yet.</td>
+            <div style="overflow-y: auto;">
+                <table class="modern-table" style="width: 100%; text-align: left;">
+                    <thead>
+                        <tr style="border-bottom: 1px solid var(--border-color);">
+                            <th style="padding: 1rem; color: var(--text-secondary);">Class</th>
+                            <th style="padding: 1rem; color: var(--text-secondary);">Day & Time</th>
+                            <th style="padding: 1rem; color: var(--text-secondary); text-align: center;">Actions</th>
                         </tr>
-                    <?php else: ?>
-                        <?php foreach($schedules as $sched): ?>
-                            <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                <td style="padding: 1rem;">
-                                    <div style="font-weight: 500;"><?= htmlspecialchars($sched['subject_code']) ?></div>
-                                    <div style="font-size: 0.75rem; color: var(--text-secondary);"><?= htmlspecialchars($sched['section']) ?> (<?= htmlspecialchars($sched['room_id']) ?>)</div>
-                                </td>
-                                <td style="padding: 1rem;">
-                                    <div><?= htmlspecialchars($sched['day_of_week']) ?></div>
-                                    <div style="font-size: 0.75rem; color: var(--text-secondary);"><?= date('g:i A', strtotime($sched['start_time'])) ?> - <?= date('g:i A', strtotime($sched['end_time'])) ?></div>
-                                </td>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($schedules)): ?>
+                            <tr>
+                                <td colspan="3" style="padding: 1rem; text-align: center; color: var(--text-secondary);">No schedules added yet.</td>
                             </tr>
-                        <?php endforeach; ?>
-                    <?php endif; ?>
-                </tbody>
-            </table>
+                        <?php else: ?>
+                            <?php foreach($schedules as $sched): ?>
+                                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                    <td style="padding: 1rem;">
+                                        <div style="font-weight: 500; color: #fff;"><?= htmlspecialchars($sched['subject_code']) ?></div>
+                                        <div style="font-size: 0.75rem; color: var(--text-secondary);"><?= htmlspecialchars($sched['section']) ?> (<?= htmlspecialchars($sched['room_id']) ?>)</div>
+                                    </td>
+                                    <td style="padding: 1rem; color: #fff;">
+                                        <div><?= htmlspecialchars($sched['day_of_week']) ?></div>
+                                        <div style="font-size: 0.75rem; color: var(--text-secondary);"><?= date('g:i A', strtotime($sched['start_time'])) ?> - <?= date('g:i A', strtotime($sched['end_time'])) ?></div>
+                                    </td>
+                                    <td style="padding: 1rem; text-align: center;">
+                                        <button type="button" class="action-btn" onclick="editSchedule(<?= $sched['schedule_id'] ?>, '<?= htmlspecialchars(addslashes($sched['subject_code'])) ?>', '<?= htmlspecialchars(addslashes($sched['section'])) ?>', '<?= htmlspecialchars(addslashes($sched['room_id'])) ?>', '<?= $sched['day_of_week'] ?>', '<?= $sched['start_time'] ?>', '<?= $sched['end_time'] ?>')" title="Edit">
+                                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                                        </button>
+                                        <button type="button" class="action-btn delete" onclick="deleteSchedule(<?= $sched['schedule_id'] ?>)" title="Delete">
+                                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                        </button>
+                                    </td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
         
     </div>
 </main>
 
+<form id="deleteScheduleForm" method="POST" style="display: none;">
+    <input type="hidden" name="action" value="delete">
+    <input type="hidden" name="schedule_id" id="delete_schedule_id" value="">
+</form>
+
 <script src="../../assets/js/logout.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', async () => {
+    const roomSelect = document.getElementById('room_select');
+    try {
+        const response = await fetch('../../api/get_rooms.php');
+        const data = await response.json();
+        
+        if (data.success && data.data.length > 0) {
+            roomSelect.innerHTML = '';
+            data.data.forEach(room => {
+                const option = document.createElement('option');
+                option.value = room.room_id;
+                option.textContent = room.room_id;
+                roomSelect.appendChild(option);
+            });
+            // Try to re-select if we were editing and room list loaded after
+            if (window.pendingRoomSelect) {
+                roomSelect.value = window.pendingRoomSelect;
+                window.pendingRoomSelect = null;
+            }
+        } else {
+            roomSelect.innerHTML = '<option value="ICT Lab 1">ICT Lab 1 (Default)</option>';
+        }
+    } catch (err) {
+        console.error('Error fetching rooms:', err);
+        roomSelect.innerHTML = '<option value="ICT Lab 1">ICT Lab 1 (Fallback)</option>';
+    }
+});
+
+function editSchedule(id, subject, section, room, day, start, end) {
+    document.getElementById('form-title').innerText = "Edit Class Schedule";
+    document.getElementById('form-action').value = "edit";
+    document.getElementById('form-schedule-id').value = id;
+    
+    document.getElementById('form-subject').value = subject;
+    document.getElementById('form-section').value = section;
+    
+    const roomSelect = document.getElementById('room_select');
+    if (roomSelect.options.length > 1) {
+        roomSelect.value = room;
+    } else {
+        window.pendingRoomSelect = room; // Wait for fetch to complete
+    }
+    
+    document.getElementById('form-day').value = day;
+    document.getElementById('form-start').value = start;
+    document.getElementById('form-end').value = end;
+    
+    document.getElementById('form-submit-btn').innerText = "Update Schedule";
+    document.getElementById('form-cancel-btn').style.display = "block";
+    
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function resetForm() {
+    document.getElementById('form-title').innerText = "Add Class Schedule";
+    document.getElementById('form-action').value = "add";
+    document.getElementById('form-schedule-id').value = "";
+    
+    document.getElementById('scheduleForm').reset();
+    
+    document.getElementById('form-submit-btn').innerText = "Add Schedule";
+    document.getElementById('form-cancel-btn').style.display = "none";
+}
+
+function deleteSchedule(scheduleId) {
+    Swal.fire({
+        title: 'Are you sure?',
+        text: 'You will not be able to recover this schedule!',
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#ef4444',
+        cancelButtonColor: '#64748b',
+        confirmButtonText: 'Yes, delete it!'
+    }).then((result) => {
+        if (result.isConfirmed) {
+            document.getElementById('delete_schedule_id').value = scheduleId;
+            document.getElementById('deleteScheduleForm').submit();
+        }
+    });
+}
+</script>
 </body>
 </html>

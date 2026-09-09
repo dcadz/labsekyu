@@ -4,18 +4,16 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-if (isset($_SESSION['user_id']) && isset($_SESSION['role'])) {
-    $role = $_SESSION['role'];
-    if ($role === 'student') {
-        header("Location: ../dashboards/student/student.php");
-    } elseif ($role === 'teacher') {
-        header("Location: ../dashboards/teacher/teacher.php");
-    } elseif ($role === 'tech_support') {
-        header("Location: ../dashboards/tech_support/techsupport.php");
-    } else {
-        header("Location: ../dashboards/$role/");
-    }
-    exit();
+// If accessed via GET, we enforce a fresh session by clearing the current one.
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    session_unset();
+    session_destroy();
+    
+    // Restart session for the new login attempt
+    session_start();
+} else {
+    // If it's a POST request (they are logging in right now), let it proceed.
+    // If they somehow had an active session during a POST request, we still let the new login override it.
 }
 
 require_once __DIR__ . '/../core/db_connect.php';
@@ -32,7 +30,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (empty($email) || empty($password)) {
         $error = 'Please enter both email and password.';
     } else {
-        $stmt = $pdo->prepare("SELECT id, full_name, role, password_hash FROM users WHERE email = :email");
+        $stmt = $pdo->prepare("SELECT id, full_name, role, role_id, password_hash FROM users WHERE email = :email");
         $stmt->execute([':email' => $email]);
         $user = $stmt->fetch();
 
@@ -46,7 +44,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['full_name'] = $user['full_name'];
 
                 $redirect = "../dashboards/" . $user['role'] . "/";
-                if ($user['role'] === 'student') $redirect = "../dashboards/student/student.php";
+                if ($user['role'] === 'student') {
+                    $face_path = __DIR__ . '/../assets/face_data/' . preg_replace('/[^a-zA-Z0-9_-]/', '', $user['role_id']) . '.jpg';
+                    if (!file_exists($face_path)) {
+                        $redirect = "../dashboards/student/student.php";
+                    } else {
+                        $redirect = "../dashboards/student/schedule.php";
+                    }
+                }
                 if ($user['role'] === 'teacher') $redirect = "../dashboards/teacher/teacher.php";
                 if ($user['role'] === 'tech_support') $redirect = "../dashboards/tech_support/techsupport.php";
                 

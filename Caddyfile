@@ -1,0 +1,4 @@
+localhost {
+    # Proxy all traffic to the XAMPP Apache server on port 8080
+    reverse_proxy localhost:8080
+}

@@ -1,0 +1,12 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # 1. Immediate Death for Directory Traversal Attempts on Private Folders
+    RewriteRule ^(config|core|storage|templates|\.env) - [F,L]
+
+    # 2. If the request is NOT targeting the /public directory...
+    RewriteCond %{REQUEST_URI} !^/labsekyu2/public/
+
+    # 3. ...silently route it into /public/
+    RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>

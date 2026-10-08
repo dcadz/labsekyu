@@ -1,7 +1,17 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+if (!isset($_SESSION['user_id'])) {
+    http_response_code(401);
+    header('Content-Type: application/json');
+    echo json_encode(['success' => false, 'error' => 'Unauthorized']);
+    exit;
+}
+
 // core/log.php
 date_default_timezone_set('Asia/Manila');
-require_once __DIR__ . '/db_connect.php';
+require_once __DIR__ . '/../config/database.php';
 
 if (isset($_GET['uid'])) {
     $uid = trim($_GET['uid']);

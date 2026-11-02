@@ -5,7 +5,9 @@ checkAccess(['student']);
 require_once __DIR__ . '/../../../config/database.php';
 
 $student_id = $_SESSION['user_id'];
-$student_id = $_SESSION['user_id'];
+$userStmt = $pdo->prepare("SELECT full_name, role_id, email, section FROM users WHERE id = :id");
+$userStmt->execute([':id' => $student_id]);
+$currentUser = $userStmt->fetch(PDO::FETCH_ASSOC) ?: [];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -115,19 +117,19 @@ $student_id = $_SESSION['user_id'];
             <div class="grid-cols-2">
                 <div class="form-group">
                     <label>Full Name</label>
-                    <input type="text" id="full_name" value="" placeholder="First, Middle, Last Name">
+                    <input type="text" id="full_name" value="<?= htmlspecialchars($currentUser['full_name'] ?? '') ?>" placeholder="First, Middle, Last Name">
                 </div>
                 <div class="form-group">
                     <label>Student ID</label>
-                    <input type="text" id="role_id" value="" placeholder="202X-XXXX-X">
+                    <input type="text" id="role_id" value="<?= htmlspecialchars($currentUser['role_id'] ?? '') ?>" placeholder="202X-XXXX-X">
                 </div>
                 <div class="form-group">
                     <label>Email Address</label>
-                    <input type="email" id="email" value="" placeholder="name@students.isatu.edu.ph">
+                    <input type="email" id="email" value="<?= htmlspecialchars($currentUser['email'] ?? '') ?>" placeholder="name@students.isatu.edu.ph">
                 </div>
                 <div class="form-group">
                     <label>Section</label>
-                    <input type="text" id="section" value="" placeholder="Course Year-Section">
+                    <input type="text" id="section" value="<?= htmlspecialchars($currentUser['section'] ?? '') ?>" placeholder="Course Year-Section">
                 </div>
             </div>
         </div>
@@ -186,17 +188,26 @@ $student_id = $_SESSION['user_id'];
 
     async function startCamera() {
         try {
-            await Promise.all([
-                faceapi.nets.tinyFaceDetector.loadFromUri('../../assets/models'),
-                faceapi.nets.faceLandmark68Net.loadFromUri('../../assets/models'),
-                faceapi.nets.faceRecognitionNet.loadFromUri('../../assets/models')
-            ]);
+            if (typeof faceapi !== 'undefined' && faceapi.nets) {
+                try {
+                    await Promise.all([
+                        faceapi.nets.tinyFaceDetector.loadFromUri('../../assets/models'),
+                        faceapi.nets.faceLandmark68Net.loadFromUri('../../assets/models'),
+                        faceapi.nets.faceRecognitionNet.loadFromUri('../../assets/models')
+                    ]);
+                } catch(mErr) {
+                    console.warn("Face-api models not available locally, running manual capture mode.", mErr);
+                }
+            }
             
             stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
             video.srcObject = stream;
+            captureBtn.disabled = false;
+            captureBtn.innerText = "Capture Photo";
+            captureBtn.style.opacity = 1;
         } catch (err) {
             console.error("Camera access denied or unavailable", err);
-            statusMsg.innerHTML = "Camera access denied. <button onclick='startCamera()' class='btn btn-primary' style='padding: 0.5rem 1rem; font-size:0.875rem; margin-top: 0.5rem;'>Retry Camera</button>";
+            statusMsg.innerHTML = "Camera access denied or unavailable. You can upload a photo using the box on the right. <button onclick='startCamera()' class='btn btn-primary' style='padding: 0.5rem 1rem; font-size:0.875rem; margin-top: 0.5rem;'>Retry Camera</button>";
             statusMsg.style.color = "var(--accent-red)";
             statusMsg.style.display = "block";
             captureBtn.style.display = "none";
@@ -211,27 +222,39 @@ $student_id = $_SESSION['user_id'];
         setInterval(async () => {
             if (video.paused || video.ended) return;
             
-            const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
-                .withFaceLandmarks()
-                .withFaceDescriptor();
-            
-            if (detection && captureBtn.style.display !== 'none') {
-                captureBtn.disabled = false;
-                captureBtn.style.opacity = 1;
-                
-                if (faceDetectionCounter > 0) {
-                    captureBtn.innerText = `Auto-capturing in ${faceDetectionCounter}...`;
-                    faceDetectionCounter--;
-                } else {
-                    captureBtn.innerText = "Capturing...";
-                    faceDetectionCounter = 3;
-                    captureBtn.click();
+            if (typeof faceapi !== 'undefined' && faceapi.nets && faceapi.nets.tinyFaceDetector && faceapi.nets.tinyFaceDetector.params) {
+                try {
+                    const detection = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions())
+                        .withFaceLandmarks()
+                        .withFaceDescriptor();
+                    
+                    if (detection && captureBtn.style.display !== 'none') {
+                        captureBtn.disabled = false;
+                        captureBtn.style.opacity = 1;
+                        
+                        if (faceDetectionCounter > 0) {
+                            captureBtn.innerText = `Auto-capturing in ${faceDetectionCounter}...`;
+                            faceDetectionCounter--;
+                        } else {
+                            captureBtn.innerText = "Capturing...";
+                            faceDetectionCounter = 3;
+                            captureBtn.click();
+                        }
+                    } else if (captureBtn.style.display !== 'none') {
+                        faceDetectionCounter = 3;
+                        captureBtn.disabled = true;
+                        captureBtn.innerText = "Looking for face...";
+                        captureBtn.style.opacity = 0.5;
+                    }
+                } catch (e) {
+                    captureBtn.disabled = false;
+                    captureBtn.innerText = "Capture Photo";
+                    captureBtn.style.opacity = 1;
                 }
-            } else if (captureBtn.style.display !== 'none') {
-                faceDetectionCounter = 3;
-                captureBtn.disabled = true;
-                captureBtn.innerText = "Looking for face...";
-                captureBtn.style.opacity = 0.5;
+            } else {
+                captureBtn.disabled = false;
+                captureBtn.innerText = "Capture Photo";
+                captureBtn.style.opacity = 1;
             }
         }, 1000);
     });
@@ -325,12 +348,6 @@ $student_id = $_SESSION['user_id'];
                 statusMsg.textContent = "Credentials and Face Data updated successfully!";
                 statusMsg.style.color = "var(--accent-green)";
                 setTimeout(() => {
-                    // Reset form for next user
-                    document.getElementById('full_name').value = '';
-                    document.getElementById('role_id').value = '';
-                    document.getElementById('email').value = '';
-                    document.getElementById('section').value = '';
-                    
                     if (retakeBtn.style.display !== 'none') {
                         retakeBtn.click();
                     }

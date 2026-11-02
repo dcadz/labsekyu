@@ -45,18 +45,30 @@ if ($role === 'teacher') {
 }
 
 try {
+    // Fetch user name
+    $userNameStmt = $pdo->prepare("SELECT full_name FROM users WHERE id = :user_id");
+    $userNameStmt->execute([':user_id' => $user_id]);
+    $userRow = $userNameStmt->fetch();
+    $userName = $userRow ? $userRow['full_name'] : 'Unknown User';
+
+    if (strtolower($room_id) === 'all' && $role === 'tech_support') {
+        $stmt = $pdo->prepare("UPDATE door_status SET is_locked = :is_locked, last_override_by = :user_id");
+        $stmt->execute([':is_locked' => $is_locked, ':user_id' => $user_id]);
+
+        $actionText = ($action === 'lock') ? "All building doors locked" : "All building doors unlocked";
+        $alertStmt = $pdo->prepare("INSERT INTO system_alerts (severity, location, event_type) VALUES ('Med', 'Building', :event_type)");
+        $alertStmt->execute([':event_type' => $actionText . ' by ' . $userName]);
+
+        echo json_encode(['success' => true, 'is_locked' => $is_locked, 'all_rooms' => true]);
+        exit();
+    }
+
     $stmt = $pdo->prepare("INSERT INTO door_status (room_id, is_locked, last_override_by) VALUES (:room_id, :is_locked, :user_id) ON DUPLICATE KEY UPDATE is_locked = :is_locked, last_override_by = :user_id");
     $stmt->execute([
         ':room_id' => $room_id,
         ':is_locked' => $is_locked,
         ':user_id' => $user_id
     ]);
-    
-    // Fetch user name
-    $userNameStmt = $pdo->prepare("SELECT full_name FROM users WHERE id = :user_id");
-    $userNameStmt->execute([':user_id' => $user_id]);
-    $userRow = $userNameStmt->fetch();
-    $userName = $userRow ? $userRow['full_name'] : 'Unknown User';
 
     $actionText = ($action === 'lock') ? "Room {$room_id} closed" : "Room {$room_id} opened";
     

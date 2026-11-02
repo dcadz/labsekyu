@@ -42,6 +42,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['user_id'] = $user['id'];
                 $_SESSION['role'] = $user['role'];
                 $_SESSION['full_name'] = $user['full_name'];
+                $_SESSION['role_id'] = $user['role_id'];
 
                 $redirect = "dashboards/" . $user['role'] . "/";
                 if ($user['role'] === 'student') {
@@ -74,439 +75,465 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login | LABSEKYU</title>
-    <!-- FontAwesome for the precise icons -->
+    <title>LABSEKYU - Secure Laboratory Access</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         :root {
-            --bg-blue: #3661be;
-            --text-peach: #FFD590;
-            --text-dark: #00102a;
-            --input-gray: #cfd6e0;
+            --brand-primary: #0A3161; /* University Blue */
+            --brand-accent: #F2A900; /* Gold */
+            --bg-canvas: #F4F6F8; /* Off-White/Canvas */
+            --bg-surface: #FFFFFF; /* White */
+            --text-main: #1A1A1A;
+            --text-muted: #666666;
+            --border-color: #E0E4E8;
+            --error-red: #D32F2F;
         }
+
         * {
             box-sizing: border-box;
             margin: 0;
             padding: 0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
         }
+
         body {
-            background-color: var(--bg-blue);
+            background-color: var(--bg-canvas);
+            color: var(--text-main);
             min-height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* Split Screen Layout */
+        .split-layout {
+            display: flex;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* Left Side: Branding & Info */
+        .branding-side {
+            flex: 1;
+            background-color: var(--brand-primary);
+            color: #FFFFFF;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 4rem;
+            position: relative;
+        }
+
+        .branding-side::after {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: linear-gradient(135deg, rgba(242, 169, 0, 0.1) 0%, transparent 100%);
+            pointer-events: none;
+        }
+
+        .brand-title {
+            font-size: 4rem;
+            font-weight: 800;
+            letter-spacing: 2px;
+            margin-bottom: 1rem;
+            color: #FFFFFF;
+        }
+        
+        .brand-subtitle {
+            font-size: 1.5rem;
+            color: var(--brand-accent);
+            margin-bottom: 3rem;
+            font-weight: 500;
+        }
+
+        .system-status {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 1.5rem;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.2);
+            max-width: 400px;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 0.75rem;
+        }
+        .status-item:last-child { margin-bottom: 0; }
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: #4CAF50;
+            box-shadow: 0 0 8px #4CAF50;
+        }
+
+        /* Right Side: Login Container */
+        .login-side {
+            flex: 1;
             display: flex;
             align-items: center;
             justify-content: center;
+            background-color: var(--bg-canvas);
+            padding: 2rem;
+        }
+
+        .login-card {
+            background: var(--bg-surface);
+            padding: 3rem;
+            border-radius: 16px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+            width: 100%;
+            max-width: 480px;
+            position: relative;
             overflow: hidden;
-            position: relative;
-        }
-        
-        /* The main container holding everything */
-        .login-container {
-            width: 90%;
-            max-width: 900px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            text-align: center;
-            position: relative;
-            z-index: 10;
-        }
-        
-        .header-section h1 {
-            color: var(--text-peach);
-            font-size: 3.5rem;
-            letter-spacing: 2px;
-            margin-bottom: 1rem;
-            text-transform: uppercase;
-        }
-        .header-section h2 {
-            color: var(--text-dark);
-            font-size: 1.8rem;
-            font-weight: 600;
-            margin-bottom: 3rem;
         }
 
-        /* Error message styling */
-        .error-msg {
-            background: #ff4d4f;
-            color: white;
-            padding: 10px 20px;
+        /* Error Message */
+        .error-alert {
+            background-color: #FDECEA;
+            color: var(--error-red);
+            padding: 1rem;
             border-radius: 8px;
-            margin-bottom: 1rem;
-            font-weight: bold;
-            display: <?php echo $error ? 'block' : 'none'; ?>;
-        }
-
-        /* STATE 1: Role Selection Grid */
-        .roles-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 2rem;
-            width: 100%;
-            transition: opacity 0.4s ease, transform 0.4s ease;
-        }
-        .roles-grid.hidden {
-            opacity: 0;
-            transform: scale(0.9);
-            pointer-events: none;
-            position: absolute; /* Take it out of flow so Form Grid can take its place */
-        }
-        
-        .role-card {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            cursor: pointer;
-            transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        }
-        .role-card:hover {
-            transform: scale(1.1);
-        }
-        .role-icon {
-            font-size: 8rem;
-            color: #000;
             margin-bottom: 1.5rem;
-            transition: color 0.3s ease;
-        }
-        .role-name {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: #000;
-            transition: all 0.3s ease;
-        }
-        .role-card:hover .role-name {
-            color: #fff;
-            text-shadow: 0 0 10px rgba(255,255,255,0.8), 0 0 20px rgba(255,255,255,0.6);
+            display: <?php echo $error ? 'flex' : 'none'; ?>;
+            align-items: center;
+            gap: 10px;
+            font-weight: 600;
+            border-left: 4px solid var(--error-red);
         }
 
-        /* STATE 2: Login Form Grid */
-        .form-grid {
-            display: grid;
-            grid-template-columns: 1fr 2fr;
-            gap: 3rem;
-            width: 100%;
-            max-width: 800px;
-            align-items: center;
+        /* View State Management */
+        .view-state {
+            display: none;
             opacity: 0;
-            transform: translateY(20px);
-            pointer-events: none;
-            transition: opacity 0.4s ease 0.2s, transform 0.4s ease 0.2s;
-            position: absolute;
-            top: 150px; /* Offset to sit below header */
+            transform: translateX(20px);
+            transition: opacity 0.3s ease, transform 0.3s ease;
         }
-        .form-grid.active {
+        .view-state.active {
+            display: block;
             opacity: 1;
-            transform: translateY(0);
-            pointer-events: auto;
-            position: relative;
-            top: 0;
+            transform: translateX(0);
         }
-        
-        .form-left {
+
+        /* Role Selection Grid */
+        h2.section-title {
+            font-size: 1.75rem;
+            margin-bottom: 0.5rem;
+            color: var(--brand-primary);
+        }
+        p.section-desc {
+            color: var(--text-muted);
+            margin-bottom: 2rem;
+        }
+
+        .role-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+
+        .role-card {
+            background: var(--bg-surface);
+            border: 2px solid var(--border-color);
+            border-radius: 12px;
+            padding: 1.25rem;
             display: flex;
-            flex-direction: column;
             align-items: center;
-        }
-        .form-left .role-icon {
-            font-size: 10rem;
-            margin-bottom: 1rem;
-        }
-        .form-left .role-name {
-            font-size: 2rem;
-            color: #000;
-        }
-        
-        .form-right {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            width: 100%;
-        }
-        #loginForm {
-            display: flex;
-            flex-direction: column;
-            gap: 1.2rem; /* The 3 tiers gap */
-            width: 100%;
-        }
-        .form-input-group.floating {
-            position: relative;
-            width: 100%;
-        }
-        .form-input-group.floating input {
-            width: 100%;
-            padding: 1.2rem 1.2rem; /* Standard height */
-            font-size: 1rem;
-            font-weight: bold;
-            text-align: left; /* Align left */
-            background-color: var(--input-gray);
-            border: none;
-            border-radius: 8px; /* Slightly less rounded */
-            color: #000;
-            outline: none;
-            transition: box-shadow 0.3s ease, padding 0.3s ease;
-        }
-        .form-input-group.floating label {
-            position: absolute;
-            left: 1.2rem;
-            top: 50%;
-            transform: translateY(-50%);
-            font-size: 0.95rem;
-            font-weight: 600;
-            color: #666;
-            pointer-events: none;
-            transition: all 0.3s ease;
-        }
-        /* Floating animation */
-        .form-input-group.floating input:focus + label,
-        .form-input-group.floating input:not(:placeholder-shown) + label {
-            top: 0.5rem;
-            font-size: 0.75rem;
-            color: #333;
-        }
-        .form-input-group.floating input:focus,
-        .form-input-group.floating input:not(:placeholder-shown) {
-            padding: 1.6rem 1.2rem 0.8rem 1.2rem; /* Shift padding when floating */
-        }
-        .form-input-group.floating input:focus {
-            box-shadow: 0 0 0 4px rgba(255, 213, 144, 0.4);
-        }
-        
-        /* Password Toggle Icon */
-        .toggle-password {
-            position: absolute;
-            right: 1.2rem;
-            top: 50%;
-            transform: translateY(-50%);
+            gap: 1.25rem;
             cursor: pointer;
-            color: #666;
-            font-size: 1.2rem;
-            transition: color 0.3s ease;
-            z-index: 5;
+            transition: all 0.2s ease;
+            min-height: 48px; /* Fitts's Law */
         }
-        .toggle-password:hover {
-            color: #333;
+
+        .role-card:hover {
+            border-color: var(--brand-accent);
+            background-color: rgba(242, 169, 0, 0.05);
+            transform: translateY(-2px);
         }
         
-        /* Third Tier: Login Button */
-        .login-btn {
-            width: 100%;
-            padding: 1.2rem;
+        .role-card .role-icon {
+            background: var(--bg-canvas);
+            color: var(--brand-primary);
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            transition: all 0.2s;
+        }
+
+        .role-card:hover .role-icon {
+            background: var(--brand-primary);
+            color: var(--brand-accent);
+        }
+
+        .role-card .role-info {
+            display: flex;
+            flex-direction: column;
+        }
+        .role-card .role-name {
+            font-weight: 700;
             font-size: 1.1rem;
-            font-weight: bold;
-            background-color: var(--text-dark);
-            color: white;
+            color: var(--brand-primary);
+        }
+
+        /* Form Elements */
+        .form-group {
+            margin-bottom: 1.5rem;
+            position: relative;
+        }
+        .form-group label {
+            display: block;
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--text-main);
+        }
+        .form-group input {
+            width: 100%;
+            padding: 1rem 1rem 1rem 3rem;
+            border: 2px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.2s;
+            background-color: var(--bg-canvas);
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: var(--brand-primary);
+            background-color: var(--bg-surface);
+        }
+        .form-group .input-icon {
+            position: absolute;
+            left: 1rem;
+            top: 2.4rem;
+            color: var(--text-muted);
+        }
+
+        .btn-primary {
+            width: 100%;
+            background-color: var(--brand-primary);
+            color: #FFFFFF;
             border: none;
+            padding: 1rem;
+            font-size: 1.1rem;
+            font-weight: 600;
             border-radius: 8px;
             cursor: pointer;
+            transition: background-color 0.2s;
+            min-height: 48px; /* Fitts's Law */
             display: flex;
             align-items: center;
             justify-content: center;
             gap: 10px;
-            transition: background-color 0.3s ease, transform 0.1s;
         }
-        .login-btn:hover {
-            background-color: #001f4d;
+        .btn-primary:hover {
+            background-color: #082446;
         }
-        .login-btn:active {
-            transform: scale(0.98);
+
+        .btn-back {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-weight: 600;
+            cursor: pointer;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: color 0.2s;
         }
+        .btn-back:hover { color: var(--brand-primary); }
 
         /* Loading Spinner */
         .spinner {
             display: none;
-            width: 24px;
-            height: 24px;
+            width: 20px;
+            height: 20px;
             border: 3px solid rgba(255,255,255,0.3);
             border-radius: 50%;
-            border-top-color: white;
-            animation: spin 1.5s ease-in-out forwards; /* 1 revolution matching the redirect delay */
+            border-top-color: #fff;
+            animation: spin 1s ease-in-out infinite;
         }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        .login-btn.is-loading .spinner {
-            display: block;
-        }
-        .login-btn.is-loading .btn-text {
-            display: none;
-        }
-        
-        .back-btn {
-            background: none;
-            border: none;
-            color: rgba(255,255,255,0.6);
-            margin-top: 1.5rem;
-            cursor: pointer;
-            font-size: 1rem;
-            text-decoration: underline;
-            transition: color 0.3s ease;
-        }
-        .back-btn:hover {
-            color: white;
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .btn-primary.is-loading .spinner { display: block; }
+        .btn-primary.is-loading span { display: none; }
 
-        /* Full page overlay loading for post-login success */
+        /* Success Overlay */
         .success-overlay {
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: var(--bg-blue);
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: var(--brand-primary);
             z-index: 100;
             display: <?php echo $loading ? 'flex' : 'none'; ?>;
             flex-direction: column;
             align-items: center;
             justify-content: center;
+            color: white;
+            border-radius: 16px;
         }
         .success-overlay .spinner {
             display: block;
-            width: 60px;
-            height: 60px;
-            border-width: 6px;
-            margin-bottom: 20px;
+            width: 50px;
+            height: 50px;
+            border-width: 4px;
+            margin-bottom: 1rem;
+            border-top-color: var(--brand-accent);
         }
-        .success-overlay h2 {
-            color: white;
-            font-size: 2rem;
-            animation: pulse 1.5s infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .split-layout { flex-direction: column; }
+            .branding-side { padding: 2rem; flex: 0 0 auto; }
+            .brand-title { font-size: 2.5rem; }
+            .brand-subtitle { font-size: 1.2rem; margin-bottom: 1.5rem; }
+            .login-side { padding: 1rem; align-items: flex-start; }
+            .login-card { padding: 2rem; }
         }
     </style>
 </head>
 <body>
 
-<!-- Loading Overlay -->
-<div class="success-overlay">
-    <div class="spinner"></div>
-    <h2>Authenticating...</h2>
-</div>
-
-<div class="login-container">
-    <div class="header-section">
-        <h1>LABSEKYU</h1>
-        <h2>Welcome back, are you?</h2>
+<div class="split-layout">
+    <!-- Left Side: Branding -->
+    <div class="branding-side">
+        <h1 class="brand-title">LABSEKYU</h1>
+        <div class="brand-subtitle">College of Computing and Informatics</div>
     </div>
 
-    <?php if ($error): ?>
-        <div class="error-msg"><?php echo htmlspecialchars($error); ?></div>
-    <?php endif; ?>
+    <!-- Right Side: Login Forms -->
+    <div class="login-side">
+        <div class="login-card">
+            
+            <!-- Success Overlay -->
+            <div class="success-overlay">
+                <div class="spinner"></div>
+                <h2>Authenticating...</h2>
+            </div>
 
-    <!-- STATE 1: Role Selection Grid -->
-    <div class="roles-grid" id="rolesGrid">
-        <div class="role-card" onclick="selectRole('tech_support', 'Admin', 'fa-user-gear')">
-            <i class="fa-solid fa-user-gear role-icon"></i>
-            <div class="role-name">Admin</div>
-        </div>
-        <div class="role-card" onclick="selectRole('teacher', 'Teacher', 'fa-chalkboard-user')">
-            <i class="fa-solid fa-chalkboard-user role-icon"></i>
-            <div class="role-name">Teacher</div>
-        </div>
-        <div class="role-card" onclick="selectRole('student', 'Student', 'fa-book-reader')">
-            <i class="fa-solid fa-book-reader role-icon"></i>
-            <div class="role-name">Student</div>
-        </div>
-    </div>
+            <?php if ($error): ?>
+                <div class="error-alert" id="errorAlert">
+                    <i class="fa-solid fa-circle-exclamation"></i>
+                    <span><?php echo htmlspecialchars($error); ?></span>
+                </div>
+            <?php endif; ?>
 
-    <!-- STATE 2: Login Form Grid -->
-    <div class="form-grid" id="formGrid">
-        <div class="form-left">
-            <i class="fa-solid role-icon" id="selectedIcon"></i>
-            <div class="role-name" id="selectedRoleName">Role Name</div>
-        </div>
-        <div class="form-right">
-            <form id="loginForm" method="POST" action="">
-                <input type="hidden" name="role" id="roleInput" value="">
-                
-                <div class="form-input-group floating">
-                    <input type="text" id="email" name="email" placeholder=" " required autofocus>
-                    <label for="email">Username</label>
+            <!-- View 1: Select Role -->
+            <div class="view-state active" id="viewSelectRole">
+                <h2 class="section-title">Welcome Back</h2>
+
+                <div class="role-grid">
+                    <div class="role-card" onclick="selectRole('student', 'Student Portal')">
+                        <div class="role-icon"><i class="fa-solid fa-book-reader"></i></div>
+                        <div class="role-info">
+                            <span class="role-name">Student</span>
+                        </div>
+                    </div>
+                    <div class="role-card" onclick="selectRole('teacher', 'Teacher Portal')">
+                        <div class="role-icon"><i class="fa-solid fa-chalkboard-user"></i></div>
+                        <div class="role-info">
+                            <span class="role-name">Teacher</span>
+                        </div>
+                    </div>
+                    <div class="role-card" onclick="selectRole('tech_support', 'Admin Portal')">
+                        <div class="role-icon"><i class="fa-solid fa-server"></i></div>
+                        <div class="role-info">
+                            <span class="role-name">Tech Support</span>
+                        </div>
+                    </div>
                 </div>
-                <div class="form-input-group floating">
-                    <input type="password" id="password" name="password" placeholder=" " required>
-                    <label for="password">Password</label>
-                    <i class="fa-solid fa-eye toggle-password" id="togglePassword"></i>
-                </div>
-                
-                <!-- 3rd Tier -->
-                <button type="submit" class="login-btn" id="loginSubmitBtn">
-                    <span class="btn-text">Sign In</span>
-                    <div class="spinner"></div>
+            </div>
+
+            <!-- View 2: Credentials Form -->
+            <div class="view-state" id="viewCredentials">
+                <button class="btn-back" onclick="goBack()">
+                    <i class="fa-solid fa-arrow-left"></i> Back to Roles
                 </button>
-            </form>
-            <button class="back-btn" onclick="goBack()">← Back to Role Selection</button>
+                
+                <h2 class="section-title" id="selectedRoleTitle">Portal Login</h2>
+
+                <form id="loginForm" method="POST" action="">
+                    <input type="hidden" name="role" id="roleInput" value="">
+                    
+                    <div class="form-group">
+                        <label for="email">Email Address</label>
+                        <i class="fa-solid fa-envelope input-icon"></i>
+                        <input type="email" id="email" name="email" placeholder="user@university.edu" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <i class="fa-solid fa-lock input-icon"></i>
+                        <input type="password" id="password" name="password" placeholder="Enter your password" required>
+                    </div>
+
+                    <button type="submit" class="btn-primary" id="loginSubmitBtn">
+                        <span>Log In</span>
+                        <div class="spinner"></div>
+                    </button>
+                </form>
+            </div>
+
         </div>
     </div>
 </div>
 
 <script>
-    const rolesGrid = document.getElementById('rolesGrid');
-    const formGrid = document.getElementById('formGrid');
-    const selectedIcon = document.getElementById('selectedIcon');
-    const selectedRoleName = document.getElementById('selectedRoleName');
+    const viewSelectRole = document.getElementById('viewSelectRole');
+    const viewCredentials = document.getElementById('viewCredentials');
     const roleInput = document.getElementById('roleInput');
+    const selectedRoleTitle = document.getElementById('selectedRoleTitle');
+    const errorAlert = document.getElementById('errorAlert');
     const loginForm = document.getElementById('loginForm');
     const loginSubmitBtn = document.getElementById('loginSubmitBtn');
-    const errorMsg = document.querySelector('.error-msg');
+    const emailInput = document.getElementById('email');
 
-    // On page load, check if there was an error submitting a specific role
+    // Handle postback persistence if an error occurred
     window.onload = function() {
         const submittedRole = "<?php echo htmlspecialchars($_POST['role'] ?? ''); ?>";
         if (submittedRole) {
-            let roleName = 'Student';
-            let iconClass = 'fa-book-reader';
-            if(submittedRole === 'tech_support') { roleName = 'Admin'; iconClass = 'fa-user-gear'; }
-            if(submittedRole === 'teacher') { roleName = 'Teacher'; iconClass = 'fa-chalkboard-user'; }
-            selectRole(submittedRole, roleName, iconClass, true); // true = no animation delay
+            let roleTitle = 'Student Portal';
+            if(submittedRole === 'tech_support') roleTitle = 'Admin Portal';
+            if(submittedRole === 'teacher') roleTitle = 'Teacher Portal';
+            
+            // Switch views instantly without hiding error
+            viewSelectRole.classList.remove('active');
+            viewCredentials.classList.add('active');
+            roleInput.value = submittedRole;
+            selectedRoleTitle.textContent = roleTitle;
         }
     }
 
-    function selectRole(roleId, roleName, iconClass, instant = false) {
-        if(errorMsg && !instant) {
-            errorMsg.style.display = 'none'; // hide error on new selection
-        }
+    function selectRole(roleId, roleTitle) {
+        if(errorAlert) errorAlert.style.display = 'none';
         
-        // Hide grid
-        rolesGrid.classList.add('hidden');
-        
-        // Populate form left side
-        selectedIcon.className = 'fa-solid role-icon ' + iconClass;
-        selectedRoleName.textContent = roleName;
         roleInput.value = roleId;
+        selectedRoleTitle.textContent = roleTitle;
 
-        // Show form
-        if (instant) {
-            formGrid.style.transition = 'none';
-            formGrid.classList.add('active');
-            setTimeout(() => { formGrid.style.transition = ''; }, 50);
-        } else {
-            formGrid.classList.add('active');
-        }
+        viewSelectRole.classList.remove('active');
+        setTimeout(() => {
+            viewCredentials.classList.add('active');
+            emailInput.focus();
+        }, 150);
     }
 
     function goBack() {
-        formGrid.classList.remove('active');
-        rolesGrid.classList.remove('hidden');
-        if(errorMsg) errorMsg.style.display = 'none';
+        if(errorAlert) errorAlert.style.display = 'none';
+        
+        viewCredentials.classList.remove('active');
+        setTimeout(() => {
+            viewSelectRole.classList.add('active');
+        }, 150);
     }
 
     loginForm.addEventListener('submit', function() {
         loginSubmitBtn.classList.add('is-loading');
     });
-
-    // Password Toggle Feature
-    const togglePassword = document.getElementById('togglePassword');
-    const passwordInput = document.getElementById('password');
-    if (togglePassword && passwordInput) {
-        togglePassword.addEventListener('click', function () {
-            // Toggle type attribute
-            const type = passwordInput.getAttribute('type') === 'password' ? 'text' : 'password';
-            passwordInput.setAttribute('type', type);
-            // Toggle eye icon class
-            this.classList.toggle('fa-eye');
-            this.classList.toggle('fa-eye-slash');
-        });
-    }
 </script>
 
 </body>

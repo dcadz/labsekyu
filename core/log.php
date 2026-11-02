@@ -2,7 +2,11 @@
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
-if (!isset($_SESSION['user_id'])) {
+
+$api_key = isset($_GET['api_key']) ? $_GET['api_key'] : '';
+$valid_api_key = 'labsekyu_secret_key_123!';
+
+if (!isset($_SESSION['user_id']) && $api_key !== $valid_api_key) {
     http_response_code(401);
     header('Content-Type: application/json');
     echo json_encode(['success' => false, 'error' => 'Unauthorized']);
@@ -73,8 +77,14 @@ if (isset($_GET['uid'])) {
             echo "ALREADY_IN\n" . $name;
         } else {
             // Find active class schedule (allow check-in 30 mins early)
-            $stmt = $pdo->prepare("SELECT schedule_id, start_time, end_time, section FROM class_schedules WHERE day_of_week=:day AND :time >= SUBTIME(start_time, '00:30:00') AND :time <= end_time LIMIT 1");
-            $stmt->execute([':day' => $day_of_week, ':time' => $time]);
+            $room_id = isset($_GET['room_id']) ? trim($_GET['room_id']) : null;
+            if ($room_id) {
+                $stmt = $pdo->prepare("SELECT schedule_id, start_time, end_time, section FROM class_schedules WHERE day_of_week=:day AND :time >= SUBTIME(start_time, '00:30:00') AND :time <= end_time AND room_id=:room LIMIT 1");
+                $stmt->execute([':day' => $day_of_week, ':time' => $time, ':room' => $room_id]);
+            } else {
+                $stmt = $pdo->prepare("SELECT schedule_id, start_time, end_time, section FROM class_schedules WHERE day_of_week=:day AND :time >= SUBTIME(start_time, '00:30:00') AND :time <= end_time LIMIT 1");
+                $stmt->execute([':day' => $day_of_week, ':time' => $time]);
+            }
             $schedule = $stmt->fetch();
             $schedule_id = $schedule ? $schedule['schedule_id'] : null;
             

@@ -18,9 +18,17 @@ if (empty($id)) {
     exit('Bad Request');
 }
 
-if ($_SESSION['role'] === 'student' && $_SESSION['role_id'] !== $id) {
-    http_response_code(403);
-    exit('Forbidden');
+if ($_SESSION['role'] === 'student') {
+    if (empty($_SESSION['role_id'])) {
+        require_once __DIR__ . '/../config/database.php';
+        $stmt = $pdo->prepare("SELECT role_id FROM users WHERE id = ?");
+        $stmt->execute([$_SESSION['user_id']]);
+        $_SESSION['role_id'] = $stmt->fetchColumn() ?: '';
+    }
+    if ($_SESSION['role_id'] !== $id) {
+        http_response_code(403);
+        exit('Forbidden');
+    }
 }
 
 $face_dir = __DIR__ . '/../storage/face_data/';

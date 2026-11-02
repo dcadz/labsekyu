@@ -35,9 +35,9 @@ MIN_FACE_SIZE = 50
 MODEL = 'hog'
 BACKUP_INTERVAL = 60
 
-ESP32_IN_URL = "http://10.165.83.5:81/stream"
-ESP32_OUT_URL = "http://ESP-OUT-IP:81/stream"
-PHP_LOG_URL = "http://localhost/labsekyu2/core/log.php"
+ESP32_IN_URL = "http://192.168.0.87:81/stream"
+ESP32_OUT_URL = "http://192.168.0.149:81/stream"
+PHP_LOG_URL = "http://localhost/labsekyu2/public/api/hardware_log.php"
 
 for folder in [DATA_FOLDER, FACES_FOLDER]:
     if not os.path.exists(folder):
@@ -225,7 +225,7 @@ def process_frame(jpg_bytes, device_id):
                 if cooldown_key not in last_ping_times or (now - last_ping_times[cooldown_key]) > COOLDOWN_SECONDS:
                     last_ping_times[cooldown_key] = now
                     try:
-                        resp = requests.get(f"{PHP_LOG_URL}?uid={person_id}&device_id={device_id}")
+                        resp = requests.get(f"{PHP_LOG_URL}?uid={person_id}&device_id={device_id}&api_key={API_KEY}&room_id=307")
                         print(f"Logged {person_id} to PHP via {device_id}: {resp.text.strip()}")
                     except Exception as e:
                         print(f"Failed to log {person_id}: {e}")
@@ -460,4 +460,4 @@ if __name__ == '__main__':
     print("=" * 60)
     print("Face Recognition System")
     print("=" * 60)
-    app.run(host='127.0.0.1', port=8000, debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=8000, debug=False, threaded=True)

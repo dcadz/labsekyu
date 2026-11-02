@@ -34,10 +34,16 @@ try {
         ':section' => $section,
         ':student_id' => $student_id
     ]);
-    $new_user_id = $student_id;
+    
+    $_SESSION['full_name'] = $full_name;
+    $_SESSION['role_id'] = $role_id;
 
     $safe_new_id = preg_replace('/[^a-zA-Z0-9_-]/', '', $role_id);
-    $new_path = __DIR__ . "/../../storage/face_data/" . $safe_new_id . ".jpg";
+    $face_dir = __DIR__ . "/../../../storage/face_data/";
+    if (!is_dir($face_dir)) {
+        mkdir($face_dir, 0777, true);
+    }
+    $new_path = $face_dir . $safe_new_id . ".jpg";
 
     // Handle Image
     if ($imageBase64) {

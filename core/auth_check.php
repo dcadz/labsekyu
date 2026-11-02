@@ -6,7 +6,7 @@ if (session_status() === PHP_SESSION_NONE) {
 
 function checkAccess(array $allowedRoles) {
     if (!isset($_SESSION['user_id']) || !isset($_SESSION['role'])) {
-        header("Location: ../../auth/login.php");
+        header("Location: /labsekyu2/public/index.php");
         exit();
     }
 

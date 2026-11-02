@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__ . '/../../core/auth_check.php';
+checkAccess(['tech_support', 'teacher', 'student']);
 require_once __DIR__ . '/../../config/database.php';
 
 header('Content-Type: application/json');
@@ -15,6 +17,7 @@ $current_time = date('H:i:s');
 
 try {
     // Find current class
+    // Find active class right now
     $stmt = $pdo->prepare("
         SELECT c.schedule_id, c.subject_code, c.section, c.start_time, c.end_time, u.full_name as teacher_name
         FROM class_schedules c
@@ -28,9 +31,10 @@ try {
     $stmt->execute([$room_id, $day_of_week, $current_time, $current_time]);
     $class = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    // If no current class, find the next one today
+    // Find the next upcoming class today (for informational context only)
+    $next_class = null;
     if (!$class) {
-        $stmt = $pdo->prepare("
+        $stmt_next = $pdo->prepare("
             SELECT c.schedule_id, c.subject_code, c.section, c.start_time, c.end_time, u.full_name as teacher_name
             FROM class_schedules c
             LEFT JOIN users u ON c.teacher_id = u.id
@@ -40,8 +44,8 @@ try {
             ORDER BY c.start_time ASC
             LIMIT 1
         ");
-        $stmt->execute([$room_id, $day_of_week, $current_time]);
-        $class = $stmt->fetch(PDO::FETCH_ASSOC);
+        $stmt_next->execute([$room_id, $day_of_week, $current_time]);
+        $next_class = $stmt_next->fetch(PDO::FETCH_ASSOC);
     }
 
     // Calculate Summary Stats
@@ -70,7 +74,7 @@ try {
     }
 
     if ($class) {
-        // Format times
+        // Format times for ongoing class
         $start = date('g:i A', strtotime($class['start_time']));
         $end = date('g:i A', strtotime($class['end_time']));
         
@@ -89,12 +93,19 @@ try {
             ]
         ]);
     } else {
+        $subject_info = $next_class 
+            ? 'Next: ' . $next_class['subject_code'] . ' (' . $next_class['section'] . ')'
+            : 'No active class';
+        $time_info = $next_class 
+            ? date('g:i A', strtotime($next_class['start_time'])) . ' - ' . date('g:i A', strtotime($next_class['end_time']))
+            : '--:--';
+
         echo json_encode([
             'success' => true,
             'class_found' => false,
             'code' => 'VACANT',
-            'subject' => 'No scheduled class',
-            'time' => '--:--',
+            'subject' => $subject_info,
+            'time' => $time_info,
             'summary' => [
                 'total_system_schedules' => $total_system_schedules,
                 'classes_today' => $classes_today,

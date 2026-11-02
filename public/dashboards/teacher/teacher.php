@@ -77,25 +77,106 @@ if ($active_schedule) {
     <title>Teacher Dashboard | LABSEKYU</title>
     <link rel="stylesheet" href="../../assets/css/dashboard.css">
     <script>
+        let teacherPulseTimer = null;
+        let teacherPulseSeconds = 5;
+
         async function toggleDoor(action, roomId) {
             if (!roomId) {
                 alert('No active room assigned right now.');
                 return;
             }
-            try {
-                const res = await fetch('../../api/toggle_door.php', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ room_id: roomId, action: action })
-                });
-                const data = await res.json();
-                if (data.success) {
+            const btn = document.getElementById('teacher-door-btn');
+            const badge = document.getElementById('teacher-door-badge');
+
+            if (action === 'unlock') {
+                if (btn) btn.disabled = true;
+
+                if (teacherPulseTimer) clearInterval(teacherPulseTimer);
+                teacherPulseSeconds = 5;
+
+                const updateTeacherPulse = () => {
+                    if (badge) {
+                        badge.className = 'door-badge unlocked';
+                        badge.textContent = `UNLOCKED (Closing in ${teacherPulseSeconds}s...)`;
+                    }
+                };
+                updateTeacherPulse();
+
+                teacherPulseTimer = setInterval(async () => {
+                    teacherPulseSeconds--;
+                    if (teacherPulseSeconds > 0) {
+                        updateTeacherPulse();
+                    } else {
+                        clearInterval(teacherPulseTimer);
+                        teacherPulseTimer = null;
+
+                        // Auto-revert UI
+                        if (badge) {
+                            badge.className = 'door-badge locked';
+                            badge.textContent = 'LOCKED - ' + roomId;
+                        }
+                        if (btn) {
+                            btn.disabled = false;
+                            btn.setAttribute('onclick', `toggleDoor('unlock', '${roomId}')`);
+                            const unlockSvg = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>`;
+                            btn.innerHTML = unlockSvg + "Unlock Door";
+                        }
+
+                        // Sync locked state back to database
+                        try {
+                            await fetch('../../api/update_lock_status.php?status=LOCKED&room=' + encodeURIComponent(roomId));
+                        } catch (e) {}
+                    }
+                }, 1000);
+
+                try {
+                    const res = await fetch('../../api/toggle_door.php', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ room_id: roomId, action: 'unlock' })
+                    });
+                    const data = await res.json();
+                    if (!data.success) {
+                        alert('Error: ' + data.error);
+                        if (teacherPulseTimer) {
+                            clearInterval(teacherPulseTimer);
+                            teacherPulseTimer = null;
+                        }
+                        if (btn) btn.disabled = false;
+                        location.reload();
+                    }
+                } catch (err) {
+                    alert('Request failed');
+                    if (teacherPulseTimer) {
+                        clearInterval(teacherPulseTimer);
+                        teacherPulseTimer = null;
+                    }
+                    if (btn) btn.disabled = false;
                     location.reload();
-                } else {
-                    alert('Error: ' + data.error);
                 }
-            } catch (err) {
-                alert('Request failed');
+            } else {
+                // Manual Immediate Lock
+                if (teacherPulseTimer) {
+                    clearInterval(teacherPulseTimer);
+                    teacherPulseTimer = null;
+                }
+                if (badge) {
+                    badge.className = 'door-badge locked';
+                    badge.textContent = 'LOCKED - ' + roomId;
+                }
+                if (btn) {
+                    btn.disabled = false;
+                    btn.setAttribute('onclick', `toggleDoor('unlock', '${roomId}')`);
+                    const unlockSvg = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>`;
+                    btn.innerHTML = unlockSvg + "Unlock Door";
+                }
+                try {
+                    await fetch('../../api/toggle_door.php', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ room_id: roomId, action: 'lock' })
+                    });
+                } catch (err) {}
             }
         }
     </script>
@@ -163,13 +244,17 @@ if ($active_schedule) {
                     const camA = document.getElementById('teacher-cam-a');
                     const camB = document.getElementById('teacher-cam-b');
                     
+                    // Load Camera A (IN)
                     const urlA = `http://${window.location.hostname}:8000/video_feed/IN?room=` + encodeURIComponent(roomName) + '&t=' + new Date().getTime();
-                    camA.innerHTML = `<img src="${urlA}" style="width:100%; height:100%; object-fit:cover;" onerror="this.outerHTML='<span style=\\'color:var(--accent-red)\\'>Offline - No camera detected</span>'">
-                                      <span style="position: absolute; bottom: 0.5rem; left: 0; right: 0; text-align: center; z-index: 10; background: rgba(0,0,0,0.5); padding: 0.25rem;">Cam A - Entry</span>`;
+                    const directA = `http://192.168.0.87:81/stream?t=` + new Date().getTime();
+                    camA.innerHTML = `<img src="${urlA}" style="width:100%; height:100%; object-fit:cover;" onerror="if(this.src!=='${directA}'){this.src='${directA}';}else{this.outerHTML='<div style=\\'display:flex; height:100%; align-items:center; justify-content:center; flex-direction:column; color:var(--accent-red);\\'><svg width=\\'40\\' height=\\'40\\' fill=\\'none\\' stroke=\\'currentColor\\' viewBox=\\'0 0 24 24\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' stroke-width=\\'2\\' d=\\'M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636\\'></path></svg><span style=\\'margin-top:0.5rem\\'>Offline - No camera detected</span></div>';}">
+                                      <span style="position: absolute; bottom: 0.5rem; left: 0; right: 0; text-align: center; z-index: 10; background: rgba(0,0,0,0.5); color: #fff; padding: 0.25rem;">Cam A - Entry</span>`;
                     
+                    // Load Camera B (OUT)
                     const urlB = `http://${window.location.hostname}:8000/video_feed/OUT?room=` + encodeURIComponent(roomName) + '&t=' + new Date().getTime();
-                    camB.innerHTML = `<img src="${urlB}" style="width:100%; height:100%; object-fit:cover;" onerror="this.outerHTML='<span style=\\'color:var(--accent-red)\\'>Offline - No camera detected</span>'">
-                                      <span style="position: absolute; bottom: 0.5rem; left: 0; right: 0; text-align: center; z-index: 10; background: rgba(0,0,0,0.5); padding: 0.25rem;">Cam B - Exit</span>`;
+                    const directB = `http://192.168.0.149:81/stream?t=` + new Date().getTime();
+                    camB.innerHTML = `<img src="${urlB}" style="width:100%; height:100%; object-fit:cover;" onerror="if(this.src!=='${directB}'){this.src='${directB}';}else{this.outerHTML='<div style=\\'display:flex; height:100%; align-items:center; justify-content:center; flex-direction:column; color:var(--accent-red);\\'><svg width=\\'40\\' height=\\'40\\' fill=\\'none\\' stroke=\\'currentColor\\' viewBox=\\'0 0 24 24\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' stroke-width=\\'2\\' d=\\'M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636\\'></path></svg><span style=\\'margin-top:0.5rem\\'>Offline - No camera detected</span></div>';}">
+                                      <span style="position: absolute; bottom: 0.5rem; left: 0; right: 0; text-align: center; z-index: 10; background: rgba(0,0,0,0.5); color: #fff; padding: 0.25rem;">Cam B - Exit</span>`;
                 });
             </script>
 
@@ -309,10 +394,40 @@ if ($active_schedule) {
                                 tr.appendChild(tdStatus);
                                 tbody.appendChild(tr);
                             });
+                        }
                     } catch (err) {
                         console.error('Error fetching live attendance:', err);
                     }
                 }, 3000); // Poll every 3 seconds
+                <?php endif; ?>
+
+                <?php if($current_room): ?>
+                const currentRoom = <?= json_encode($current_room) ?>;
+                setInterval(async () => {
+                    try {
+                        const dRes = await fetch(`../../api/get_door_status.php?room_id=${encodeURIComponent(currentRoom)}`);
+                        const dData = await dRes.json();
+                        if (dData.success) {
+                            const isLocked = dData.is_locked;
+                            const badge = document.getElementById('teacher-door-badge');
+                            const btn = document.getElementById('teacher-door-btn');
+                            if (badge && btn && !teacherPulseTimer) {
+                                if (isLocked) {
+                                    badge.className = 'door-badge locked';
+                                    badge.textContent = 'LOCKED - ' + currentRoom;
+                                    btn.disabled = false;
+                                    btn.setAttribute('onclick', `toggleDoor('unlock', '${currentRoom}')`);
+                                    btn.innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>Unlock Door`;
+                                } else {
+                                    badge.className = 'door-badge unlocked';
+                                    badge.textContent = 'UNLOCKED - ' + currentRoom;
+                                    btn.setAttribute('onclick', `toggleDoor('lock', '${currentRoom}')`);
+                                    btn.innerHTML = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>Lock Door`;
+                                }
+                            }
+                        }
+                    } catch (e) {}
+                }, 800); // Poll every 800ms for fast hardware sync
                 <?php endif; ?>
             });
         </script>
@@ -329,14 +444,14 @@ if ($active_schedule) {
                         Outside Schedule
                     </button>
                 <?php elseif($door_locked): ?>
-                    <div class="door-badge locked">LOCKED - <?= htmlspecialchars($current_room) ?></div>
-                    <button onclick="toggleDoor('unlock', '<?= htmlspecialchars(addslashes($current_room)) ?>')" class="btn btn-primary" style="width: 100%;">
+                    <div class="door-badge locked" id="teacher-door-badge">LOCKED - <?= htmlspecialchars($current_room) ?></div>
+                    <button id="teacher-door-btn" onclick="toggleDoor('unlock', '<?= htmlspecialchars(addslashes($current_room)) ?>')" class="btn btn-primary" style="width: 100%;">
                         <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>
                         Unlock Door
                     </button>
                 <?php else: ?>
-                    <div class="door-badge unlocked">UNLOCKED - <?= htmlspecialchars($current_room) ?></div>
-                    <button onclick="toggleDoor('lock', '<?= htmlspecialchars(addslashes($current_room)) ?>')" class="btn btn-primary" style="width: 100%;">
+                    <div class="door-badge unlocked" id="teacher-door-badge">UNLOCKED - <?= htmlspecialchars($current_room) ?></div>
+                    <button id="teacher-door-btn" onclick="toggleDoor('lock', '<?= htmlspecialchars(addslashes($current_room)) ?>')" class="btn btn-primary" style="width: 100%;">
                         <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
                         Lock Door
                     </button>

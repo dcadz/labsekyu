@@ -8,45 +8,74 @@ require_once __DIR__ . '/../../../config/database.php';
 $pendingCountStmt = $pdo->query("SELECT COUNT(*) FROM teacher_alerts WHERE status = 'pending'");
 $pendingCount = $pendingCountStmt->fetchColumn();
 
-// --- SCHEDULE-BASED AUTO UNLOCK LOGIC ---
+// --- ROOM SECURITY & LOCK STATUS ---
+// Inactive rooms default to locked (Turned Off) to prevent unauthorized access.
+// NEVER auto-unlock rooms simply by opening the dashboard page.
 $currentTime = date('H:i:s');
 $currentDay = date('l');
 
-// 1. Find rooms active RIGHT NOW
-$activeRoomsStmt = $pdo->prepare("SELECT DISTINCT room_id FROM class_schedules WHERE day_of_week = ? AND start_time <= ? AND end_time >= ?");
-$activeRoomsStmt->execute([$currentDay, $currentTime, $currentTime]);
-$scheduledActiveRooms = $activeRoomsStmt->fetchAll(PDO::FETCH_COLUMN);
-
-if (!empty($scheduledActiveRooms)) {
-    $inQuery = implode(',', array_fill(0, count($scheduledActiveRooms), '?'));
-    $updateDoors = $pdo->prepare("UPDATE door_status SET is_locked = 0 WHERE room_id IN ($inQuery)");
-    $updateDoors->execute(array_values($scheduledActiveRooms));
-}
-
-// 2. Lock scheduled rooms that are NOT active right now
+// Lock any scheduled rooms that are NOT currently in session
 $allScheduledRoomsStmt = $pdo->prepare("SELECT DISTINCT room_id FROM class_schedules WHERE day_of_week = ?");
 $allScheduledRoomsStmt->execute([$currentDay]);
 $allScheduledRooms = $allScheduledRoomsStmt->fetchAll(PDO::FETCH_COLUMN);
 
-$roomsToLock = array_diff($allScheduledRooms, $scheduledActiveRooms);
-if (!empty($roomsToLock)) {
-    $inQuery = implode(',', array_fill(0, count($roomsToLock), '?'));
-    $lockDoors = $pdo->prepare("UPDATE door_status SET is_locked = 1 WHERE room_id IN ($inQuery)");
-    $lockDoors->execute(array_values($roomsToLock));
-}
-// ----------------------------------------
+// Define all default building rooms
+$rooms_300 = ['301', '302', '303', '304', '305', '306', '307', '308', '309'];
+$rooms_200 = ['201', '202', '203', '204', '205', '206', '207', '208'];
+$rooms_100 = ['101', '102', '103', '104', '105', '106', '107', '108'];
+$allDefaultRooms = array_merge($rooms_300, $rooms_200, $rooms_100);
+
+// Auto-populate all default building rooms into door_status if missing so ALL rooms are functional
+try {
+    $existingRooms = $pdo->query("SELECT room_id FROM door_status")->fetchAll(PDO::FETCH_COLUMN);
+    $missingRooms = array_diff($allDefaultRooms, $existingRooms);
+    if (!empty($missingRooms)) {
+        $insStmt = $pdo->prepare("INSERT INTO door_status (room_id, is_locked) VALUES (?, 1) ON DUPLICATE KEY UPDATE room_id=room_id");
+        foreach ($missingRooms as $mRoom) {
+            $insStmt->execute([$mRoom]);
+        }
+    }
+} catch (Exception $e) {}
+
+// 1. Find rooms actively in class right now
+$activeRoomsStmt = $pdo->prepare("
+    SELECT c.*, u.full_name as teacher_name 
+    FROM class_schedules c 
+    JOIN users u ON c.teacher_id = u.id 
+    WHERE c.day_of_week = ? 
+      AND c.start_time <= ? 
+      AND c.end_time >= ? 
+    ORDER BY c.room_id ASC
+");
+$activeRoomsStmt->execute([$currentDay, $currentTime, $currentTime]);
+$allActiveClasses = $activeRoomsStmt->fetchAll();
+$scheduledActiveRooms = array_values(array_unique(array_column($allActiveClasses, 'room_id')));
 
 // Fetch All Door Statuses to determine occupancy/unlocked status
 $doorStmt = $pdo->query("SELECT room_id FROM door_status WHERE is_locked = 0");
 $unlockedRooms = $doorStmt->fetchAll(PDO::FETCH_COLUMN);
 
-// Mock current class for Room Utilization
-$current_class = [
-    'room' => 'ICT 204',
-    'code' => 'BSIT 4-A',
-    'subject' => 'IT 127 - MR. CABIA',
-    'time' => '8:00 PM - 9:30 AM'
-];
+// Automatically detect the initial room to display:
+// Priority: Show room that is actively in class right now!
+if (!empty($allActiveClasses)) {
+    $firstActive = $allActiveClasses[0];
+    $initialRoom = $firstActive['room_id'];
+    $current_class = [
+        'room' => $firstActive['room_id'],
+        'code' => $firstActive['section'],
+        'subject' => $firstActive['subject_code'] . ' - ' . strtoupper($firstActive['teacher_name']),
+        'time' => date('g:i A', strtotime($firstActive['start_time'])) . ' - ' . date('g:i A', strtotime($firstActive['end_time']))
+    ];
+} else {
+    // If no room is active in class right now, show Room 101 as VACANT
+    $initialRoom = '101';
+    $current_class = [
+        'room' => '101',
+        'code' => 'VACANT',
+        'subject' => 'No active class',
+        'time' => '--:--'
+    ];
+}
 
 $today = date('Y-m-d');
 $feedStmt = $pdo->prepare("
@@ -80,7 +109,7 @@ if (empty($attendance_feed)) {
     <title>Tech Support | LABSEKYU</title>
     <link rel="stylesheet" href="../../assets/css/dashboard.css?v=<?= time() ?>">
     <script>
-        let currentSelectedRoom = 'ICT Lab 1';
+        let currentSelectedRoom = '<?= htmlspecialchars($initialRoom) ?>';
 
         async function addRoom() {
             const roomName = prompt("Enter new room name (e.g., 'Lab 401'):");
@@ -127,22 +156,129 @@ if (empty($attendance_feed)) {
             }
         }
 
-        async function toggleDoor(action) {
+        async function toggleAllRooms(action) {
+            const verb = action === 'unlock' ? 'UNLOCK' : 'LOCK';
+            if (!confirm(`Are you sure you want to ${verb} ALL building doors?`)) return;
             try {
                 const res = await fetch('../../api/toggle_door.php', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ room_id: currentSelectedRoom, action: action })
+                    body: JSON.stringify({ room_id: 'all', action: action })
                 });
                 const data = await res.json();
                 if (data.success) {
-                    // Refresh the door UI for the current room
-                    changeRoom(currentSelectedRoom, true); // true to skip camera refresh
+                    refreshDoorStatus(currentSelectedRoom);
                 } else {
                     alert('Error: ' + data.error);
                 }
             } catch (err) {
                 alert('Request failed');
+            }
+        }
+
+        let pulseCountdownTimer = null;
+        let pulseSecondsLeft = 5;
+
+        async function toggleDoor(action) {
+            const btnA = document.getElementById('btn-door-a');
+            const badgeA = document.getElementById('badge-door-a');
+            const room = currentSelectedRoom;
+
+            if (action === 'unlock') {
+                // 1. Disable button during pulse
+                if (btnA) btnA.disabled = true;
+
+                if (pulseCountdownTimer) clearInterval(pulseCountdownTimer);
+                pulseSecondsLeft = 5;
+
+                const updatePulseDisplay = () => {
+                    if (badgeA && currentSelectedRoom === room) {
+                        badgeA.className = 'door-badge unlocked';
+                        badgeA.innerText = `UNLOCKED (Closing in ${pulseSecondsLeft}s...)`;
+                    }
+                };
+                updatePulseDisplay();
+
+                // 2. 5-second countdown timer mirroring the hardware pulse
+                pulseCountdownTimer = setInterval(async () => {
+                    pulseSecondsLeft--;
+                    if (pulseSecondsLeft > 0) {
+                        updatePulseDisplay();
+                    } else {
+                        clearInterval(pulseCountdownTimer);
+                        pulseCountdownTimer = null;
+
+                        // 3. Auto-revert UI to match physical hardware power cut
+                        if (badgeA && currentSelectedRoom === room) {
+                            badgeA.className = 'door-badge locked';
+                            badgeA.innerText = 'LOCKED - Room ' + room;
+                        }
+                        if (btnA) {
+                            btnA.disabled = false;
+                            const unlockSvg = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>`;
+                            btnA.innerHTML = unlockSvg + "Unlock Door";
+                            btnA.onclick = () => toggleDoor('unlock');
+                        }
+
+                        // 4. Sync locked state back to database via update_lock_status.php
+                        try {
+                            await fetch('../../api/update_lock_status.php?status=LOCKED&room=' + encodeURIComponent(room));
+                            refreshDoorStatus(room);
+                        } catch (e) {}
+                    }
+                }, 1000);
+
+                try {
+                    const res = await fetch('../../api/toggle_door.php', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ room_id: room, action: 'unlock' })
+                    });
+                    const data = await res.json();
+                    if (!data.success) {
+                        alert('Error: ' + data.error);
+                        if (pulseCountdownTimer) {
+                            clearInterval(pulseCountdownTimer);
+                            pulseCountdownTimer = null;
+                        }
+                        if (btnA) btnA.disabled = false;
+                        refreshDoorStatus(room);
+                    }
+                } catch (err) {
+                    console.error('Failed to communicate with lock:', err);
+                    if (pulseCountdownTimer) {
+                        clearInterval(pulseCountdownTimer);
+                        pulseCountdownTimer = null;
+                    }
+                    if (btnA) btnA.disabled = false;
+                    refreshDoorStatus(room);
+                }
+            } else {
+                // Manual Immediate Lock
+                if (pulseCountdownTimer) {
+                    clearInterval(pulseCountdownTimer);
+                    pulseCountdownTimer = null;
+                }
+                if (badgeA) {
+                    badgeA.className = 'door-badge locked';
+                    badgeA.innerText = 'LOCKED - Room ' + room;
+                }
+                if (btnA) {
+                    btnA.disabled = false;
+                    const unlockSvg = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>`;
+                    btnA.innerHTML = unlockSvg + "Unlock Door";
+                    btnA.onclick = () => toggleDoor('unlock');
+                }
+                try {
+                    await fetch('../../api/toggle_door.php', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ room_id: room, action: 'lock' })
+                    });
+                    refreshDoorStatus(room);
+                } catch (err) {
+                    refreshDoorStatus(room);
+                }
             }
         }
     </script>
@@ -188,11 +324,13 @@ if (empty($attendance_feed)) {
         
         <!-- ROOM OCCUPANCY -->
         <div class="card">
-            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
                 <h2>ROOM OCCUPANCY</h2>
-                <div>
-                    <button class="btn btn-primary" onclick="addRoom()" style="padding: 0.5rem 1rem; font-size: 0.875rem;">+ Add Room</button>
-                    <button class="btn btn-primary" onclick="deleteRoom()" style="padding: 0.5rem 1rem; font-size: 0.875rem; background: var(--accent-red); margin-left: 0.5rem;">Delete Room</button>
+                <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                    <button class="btn btn-primary" onclick="toggleAllRooms('unlock')" style="padding: 0.5rem 0.875rem; font-size: 0.875rem; background: var(--accent-green);">Unlock All</button>
+                    <button class="btn btn-primary" onclick="toggleAllRooms('lock')" style="padding: 0.5rem 0.875rem; font-size: 0.875rem; background: #475569;">Lock All</button>
+                    <button class="btn btn-primary" onclick="addRoom()" style="padding: 0.5rem 0.875rem; font-size: 0.875rem;">+ Add Room</button>
+                    <button class="btn btn-primary" onclick="deleteRoom()" style="padding: 0.5rem 0.875rem; font-size: 0.875rem; background: var(--accent-red);">Delete Room</button>
                 </div>
             </div>
             <div class="tier-label">3rd Floor</div>
@@ -200,7 +338,7 @@ if (empty($attendance_feed)) {
                 <?php
                 $rooms_300 = ['301', '302', '303', '304', '305', '306', '307', '308', '309'];
                 foreach ($rooms_300 as $room) {
-                    $isOcc = in_array($room, $unlockedRooms);
+                    $isOcc = in_array($room, $scheduledActiveRooms) || in_array($room, $unlockedRooms);
                     $bg = $isOcc ? 'var(--accent-green)' : '#64748b';
                     $color = '#fff';
                     echo "<div id=\"grid-room-$room\" onclick=\"changeRoom('$room')\" style='background: $bg; color: $color; text-align: center; padding: 1.2rem 0.5rem; font-weight: bold; font-size: 1.125rem; cursor: pointer; transition: opacity 0.2s, background 0.3s;' onmouseover=\"this.style.opacity='0.8'\" onmouseout=\"this.style.opacity='1'\">$room</div>";
@@ -213,7 +351,7 @@ if (empty($attendance_feed)) {
                 <?php
                 $rooms_200 = ['201', '202', '203', '204', '205', '206', '207', '208'];
                 foreach ($rooms_200 as $room) {
-                    $isOcc = in_array($room, $unlockedRooms);
+                    $isOcc = in_array($room, $scheduledActiveRooms) || in_array($room, $unlockedRooms);
                     $bg = $isOcc ? 'var(--accent-green)' : '#64748b';
                     $color = '#fff';
                     echo "<div id=\"grid-room-$room\" onclick=\"changeRoom('$room')\" style='background: $bg; color: $color; text-align: center; padding: 1.2rem 0.5rem; font-weight: bold; font-size: 1.125rem; cursor: pointer; transition: opacity 0.2s, background 0.3s;' onmouseover=\"this.style.opacity='0.8'\" onmouseout=\"this.style.opacity='1'\">$room</div>";
@@ -226,7 +364,7 @@ if (empty($attendance_feed)) {
                 <?php
                 $rooms_100 = ['101', '102', '103', '104', '105', '106', '107', '108'];
                 foreach ($rooms_100 as $room) {
-                    $isOcc = in_array($room, $unlockedRooms);
+                    $isOcc = in_array($room, $scheduledActiveRooms) || in_array($room, $unlockedRooms);
                     $bg = $isOcc ? 'var(--accent-green)' : '#64748b';
                     $color = '#fff';
                     echo "<div id=\"grid-room-$room\" onclick=\"changeRoom('$room')\" style='background: $bg; color: $color; text-align: center; padding: 1.2rem 0.5rem; font-weight: bold; font-size: 1.125rem; cursor: pointer; transition: opacity 0.2s, background 0.3s;' onmouseover=\"this.style.opacity='0.8'\" onmouseout=\"this.style.opacity='1'\">$room</div>";
@@ -249,7 +387,7 @@ if (empty($attendance_feed)) {
                     echo "<div style='grid-column: 1 / -1; color: var(--text-secondary); font-size: 0.875rem;'>No dynamic rooms added yet.</div>";
                 } else {
                     foreach ($dynamicRooms as $room) {
-                        $isOcc = in_array($room, $unlockedRooms);
+                        $isOcc = in_array($room, $scheduledActiveRooms) || in_array($room, $unlockedRooms);
                         $bg = $isOcc ? 'var(--accent-green)' : '#64748b';
                         $color = '#fff';
                         echo "<div id=\"grid-room-$room\" onclick=\"changeRoom('$room')\" style='background: $bg; color: $color; text-align: center; padding: 1.2rem 0.5rem; font-weight: bold; font-size: 1.125rem; cursor: pointer; transition: opacity 0.2s, background 0.3s;' onmouseover=\"this.style.opacity='0.8'\" onmouseout=\"this.style.opacity='1'\">$room</div>";
@@ -305,17 +443,20 @@ if (empty($attendance_feed)) {
 
             <!-- RIGHT COLUMN -->
             <div style="display: flex; flex-direction: column; gap: 1.5rem;" id="door-controls">
-                <!-- Door A & Door B -->
-                <div class="door-status-panel" style="margin-bottom: 0; padding: 1.5rem;">
-                    <div class="door-title" style="text-transform: uppercase;">DOOR A (Entrance)</div>
-                    <div class="door-badge locked" id="badge-door-a" style="margin: 1rem 0;">LOCKED</div>
-                    <button id="btn-door-a" class="btn btn-primary" style="width: 100%;">Unlock Door</button>
-                </div>
-
-                <div class="door-status-panel" style="padding: 1.5rem;">
-                    <div class="door-title" style="text-transform: uppercase;">DOOR B (Exit)</div>
-                    <div class="door-badge locked" id="badge-door-b" style="margin: 1rem 0;">LOCKED</div>
-                    <button id="btn-door-b" class="btn btn-primary" style="width: 100%;">Unlock Door</button>
+                <!-- Single Door A Panel (Matching Live View size & padding) -->
+                <div class="card door-status-panel" style="flex: 1; display: flex; flex-direction: column; justify-content: space-between; padding: 1.5rem;">
+                    <div class="card-header" style="margin-bottom: 0;">
+                        <h2 style="color: var(--bg-sidebar); font-size: 1.125rem; font-weight: 700; text-transform: uppercase;">Door A Status</h2>
+                    </div>
+                    <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.5rem 0;">
+                        <div class="door-title" style="text-transform: uppercase; font-size: 1.25rem; font-weight: 700; color: var(--bg-sidebar); margin-bottom: 0.25rem;">DOOR A (Entrance)</div>
+                        <div class="door-subtitle" style="font-size: 0.875rem; color: var(--text-secondary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1.5rem;">ENTRANCE CONTROL</div>
+                        <div class="door-badge locked" id="badge-door-a" style="margin-bottom: 1.5rem; font-size: 1rem; font-weight: 700; width: 100%; max-width: 300px; padding: 0.875rem 1.5rem;">LOCKED</div>
+                        <button id="btn-door-a" onclick="toggleDoor('unlock')" class="btn btn-primary" style="width: 100%; max-width: 300px; min-height: 48px; font-size: 1rem; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;">
+                            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>
+                            Unlock Door
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Class summary -->
@@ -350,31 +491,84 @@ if (empty($attendance_feed)) {
 </main>
 <script src="../../assets/js/logout.js"></script>
 <script>
-    async function changeRoom(roomNumber, skipCamera = false) {
+    async function refreshDoorStatus(roomNumber) {
+        try {
+            // 1. Fetch building-wide door status to keep ALL room tiles live on the grid
+            const allRes = await fetch('../../api/get_door_status.php?room_id=all');
+            const allData = await allRes.json();
+            if (allData.success && allData.doors) {
+                for (const [rId, isLocked] of Object.entries(allData.doors)) {
+                    const gridCell = document.getElementById('grid-room-' + rId);
+                    if (gridCell) {
+                        gridCell.style.background = isLocked ? '#64748b' : 'var(--accent-green)';
+                    }
+                }
+            }
+
+            // 2. Fetch specific door details for the currently active room
+            const res = await fetch('../../api/get_door_status.php?room_id=' + encodeURIComponent(roomNumber));
+            const data = await res.json();
+            
+            if(data.success) {
+                const isLocked = data.is_locked;
+                
+                // Update Door Badge and Button (Door A) only if not in active 5s pulse countdown
+                if (!pulseCountdownTimer || currentSelectedRoom !== roomNumber) {
+                    const badgeA = document.getElementById('badge-door-a');
+                    if (badgeA) {
+                        const lockedHtml = 'LOCKED - Room ' + roomNumber;
+                        const unlockedHtml = 'UNLOCKED - Room ' + roomNumber;
+                        badgeA.className = isLocked ? 'door-badge locked' : 'door-badge unlocked';
+                        badgeA.innerText = isLocked ? lockedHtml : unlockedHtml;
+                    }
+
+                    // Update Button (Door A)
+                    const btnA = document.getElementById('btn-door-a');
+                    if (btnA) {
+                        btnA.disabled = false;
+                        const unlockSvg = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>`;
+                        const lockSvg = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>`;
+                        btnA.innerHTML = isLocked ? (unlockSvg + "Unlock Door") : (lockSvg + "Lock Door");
+                        btnA.onclick = () => toggleDoor(isLocked ? 'unlock' : 'lock');
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Failed to fetch door status", err);
+        }
+    }
+
+    async function changeRoom(roomNumber) {
         currentSelectedRoom = roomNumber;
         
-        // Update Title
-        if(!skipCamera) {
-            document.getElementById('camera-title').innerText = "Live camera field - Room " + roomNumber;
-            
-            const camA = document.getElementById('cam-enter-status');
-            const camB = document.getElementById('cam-exit-status');
-            
-            // Connecting state
-            camA.innerHTML = '<span style="color: var(--accent-yellow);">Connecting...</span>';
-            camB.innerHTML = '<span style="color: var(--accent-yellow);">Connecting...</span>';
-
-            // Load Camera A (IN)
-            const urlA = `http://${window.location.hostname}:8000/video_feed/IN?room=` + encodeURIComponent(roomNumber) + '&t=' + new Date().getTime();
-            camA.innerHTML = `<img src="${urlA}" style="width:100%; height:100%; object-fit:cover;" onerror="this.outerHTML='<span style=\\'color:var(--accent-red)\\'>Offline - No camera detected</span>'">
-                              <span style="position: absolute; bottom: 0.75rem; font-size: 0.75rem; background: rgba(0,0,0,0.5); padding: 0.25rem 0.5rem; border-radius: 0.25rem;">Camera A (Log In)</span>`;
-
-            // Load Camera B (OUT)
-            const urlB = `http://${window.location.hostname}:8000/video_feed/OUT?room=` + encodeURIComponent(roomNumber) + '&t=' + new Date().getTime();
-            camB.innerHTML = `<img src="${urlB}" style="width:100%; height:100%; object-fit:cover;" onerror="this.outerHTML='<span style=\\'color:var(--accent-red)\\'>Offline - No camera detected</span>'">
-                              <span style="position: absolute; bottom: 0.75rem; font-size: 0.75rem; background: rgba(0,0,0,0.5); padding: 0.25rem 0.5rem; border-radius: 0.25rem;">Camera B (Log Out)</span>`;
+        // Highlight active room cell on grid with glowing outline
+        document.querySelectorAll('.tier-grid > div').forEach(div => {
+            div.style.outline = 'none';
+            div.style.boxShadow = 'none';
+        });
+        const selectedCell = document.getElementById('grid-room-' + roomNumber);
+        if (selectedCell) {
+            selectedCell.style.outline = '3px solid #38bdf8';
+            selectedCell.style.boxShadow = '0 0 14px rgba(56, 189, 248, 0.7)';
         }
+
+        // Update Title
+        document.getElementById('camera-title').innerText = "Live camera field - Room " + roomNumber;
         
+        // Update Camera Streams with fallback
+        const camA = document.getElementById('cam-enter-status');
+        const camB = document.getElementById('cam-exit-status');
+        
+        const streamA = `http://${window.location.hostname}:8000/video_feed/IN?room=` + encodeURIComponent(roomNumber) + '&t=' + Date.now();
+        const directA = `http://192.168.0.87:81/stream?t=` + Date.now();
+        camA.innerHTML = `<img src="${streamA}" style="width:100%; height:100%; object-fit:cover;" onerror="if(this.src!=='${directA}'){this.src='${directA}';}else{this.outerHTML='<div style=\\'display:flex; height:100%; align-items:center; justify-content:center; flex-direction:column; color:var(--accent-red);\\'><svg width=\\'40\\' height=\\'40\\' fill=\\'none\\' stroke=\\'currentColor\\' viewBox=\\'0 0 24 24\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' stroke-width=\\'2\\' d=\\'M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636\\'></path></svg><span style=\\'margin-top:0.5rem\\'>Offline - No camera detected</span></div>';}">
+                          <span style="position: absolute; bottom: 0.75rem; font-size: 0.75rem; background: rgba(0,0,0,0.5); color: #fff; padding: 0.25rem 0.5rem; border-radius: 0.25rem;">Camera A (Log In)</span>`;
+
+        const streamB = `http://${window.location.hostname}:8000/video_feed/OUT?room=` + encodeURIComponent(roomNumber) + '&t=' + Date.now();
+        const directB = `http://192.168.0.149:81/stream?t=` + Date.now();
+        camB.innerHTML = `<img src="${streamB}" style="width:100%; height:100%; object-fit:cover;" onerror="if(this.src!=='${directB}'){this.src='${directB}';}else{this.outerHTML='<div style=\\'display:flex; height:100%; align-items:center; justify-content:center; flex-direction:column; color:var(--accent-red);\\'><svg width=\\'40\\' height=\\'40\\' fill=\\'none\\' stroke=\\'currentColor\\' viewBox=\\'0 0 24 24\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' stroke-width=\\'2\\' d=\\'M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636\\'></path></svg><span style=\\'margin-top:0.5rem\\'>Offline - No camera detected</span></div>';}">
+                          <span style="position: absolute; bottom: 0.75rem; font-size: 0.75rem; background: rgba(0,0,0,0.5); color: #fff; padding: 0.25rem 0.5rem; border-radius: 0.25rem;">Camera B (Log Out)</span>`;
+
         // Update Room Number in Utilization early
         document.getElementById('utilization-room').innerText = roomNumber;
         document.getElementById('utilization-code').innerText = 'Loading...';
@@ -411,49 +605,20 @@ if (empty($attendance_feed)) {
         }
         
         // Fetch real door status from DB
-        try {
-            const res = await fetch('../../api/get_door_status.php?room_id=' + encodeURIComponent(roomNumber));
-            const data = await res.json();
-            
-            if(data.success) {
-                const isLocked = data.is_locked;
-                
-                // Update Door Badges
-                const badgeA = document.getElementById('badge-door-a');
-                const badgeB = document.getElementById('badge-door-b');
-                
-                const lockedHtml = 'LOCKED - Room ' + roomNumber;
-                const unlockedHtml = 'UNLOCKED - Room ' + roomNumber;
-
-                badgeA.className = isLocked ? 'door-badge locked' : 'door-badge unlocked';
-                badgeA.innerText = isLocked ? lockedHtml : unlockedHtml;
-                
-                badgeB.className = isLocked ? 'door-badge locked' : 'door-badge unlocked';
-                badgeB.innerText = isLocked ? lockedHtml : unlockedHtml;
-
-                // Update Grid Color Live!
-                const gridCell = document.getElementById('grid-room-' + roomNumber);
-                if (gridCell) {
-                    gridCell.style.background = isLocked ? '#64748b' : 'var(--accent-green)';
-                }
-
-                // Update Buttons
-                const btnA = document.getElementById('btn-door-a');
-                const btnB = document.getElementById('btn-door-b');
-                
-                btnA.innerText = isLocked ? "Unlock Door" : "Lock Door";
-                btnB.innerText = isLocked ? "Unlock Door" : "Lock Door";
-                
-                btnA.onclick = () => toggleDoor(isLocked ? 'unlock' : 'lock');
-                btnB.onclick = () => toggleDoor(isLocked ? 'unlock' : 'lock');
-            }
-        } catch (err) {
-            console.error("Failed to fetch door status", err);
-        }
+        await refreshDoorStatus(roomNumber);
     }
     
-    // Initialize default state
-    changeRoom('ICT 204');
+    document.addEventListener('DOMContentLoaded', () => {
+        // Initialize default state with the detected active room
+        changeRoom('<?= htmlspecialchars($initialRoom) ?>');
+
+        // Real-time door status polling every 800ms for instant hardware sync
+        setInterval(() => {
+            if (currentSelectedRoom) {
+                refreshDoorStatus(currentSelectedRoom);
+            }
+        }, 800);
+    });
 </script>
 </body>
 </html>

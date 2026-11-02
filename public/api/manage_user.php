@@ -53,6 +53,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $pdo->prepare("DELETE FROM users WHERE id = ? AND role != 'tech_support'");
         if ($stmt->execute([$user_id])) {
             if ($u && !empty($u['role_id'])) {
+                $safe_id = preg_replace('/[^a-zA-Z0-9_-]/', '', $u['role_id']);
+                $face_path = __DIR__ . '/../../storage/face_data/' . $safe_id . '.jpg';
+                if (file_exists($face_path)) {
+                    unlink($face_path);
+                }
 
                 // Remove face encoding from Python backend
                 $ch = curl_init();

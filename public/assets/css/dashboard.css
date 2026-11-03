@@ -5,6 +5,7 @@
     /* 60% Dominant: Whites and Canvas */
     --bg-dark: #F4F6F8; /* Main canvas */
     --bg-card: #FFFFFF; /* White Surface for Cards */
+    --bg-canvas: #F8FAFC; /* Light canvas surface */
     
     /* 30% Secondary: University Blue */
     --bg-sidebar: #0A3161; 

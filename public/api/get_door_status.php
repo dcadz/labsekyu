@@ -24,8 +24,20 @@ try {
     $stmt->execute([':room_id' => $room_id]);
     $door = $stmt->fetch();
     
-    // Default to locked (1) if no record exists for that room
-    $is_locked = $door ? (bool)$door['is_locked'] : true;
+    // Check if system master setting is UNLOCKED
+    $setStmt = $pdo->query("SELECT setting_value FROM system_settings WHERE setting_key = 'room_status' LIMIT 1");
+    $settingVal = $setStmt ? $setStmt->fetchColumn() : null;
+    $masterUnlocked = ($settingVal && strtoupper(trim($settingVal)) === 'UNLOCKED');
+
+    if ($door) {
+        $is_locked = (bool)$door['is_locked'];
+        // If master setting was set to UNLOCKED via hardware button, sync it
+        if ($masterUnlocked && $is_locked) {
+            $is_locked = false;
+        }
+    } else {
+        $is_locked = $masterUnlocked ? false : true;
+    }
     
     echo json_encode(['success' => true, 'is_locked' => $is_locked, 'room_id' => $room_id]);
 } catch (PDOException $e) {

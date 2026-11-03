@@ -75,8 +75,9 @@ $currentUser = $userStmt->fetch(PDO::FETCH_ASSOC) ?: [];
         }
         
         .form-group { margin-bottom: 1rem; }
-        .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.875rem; color: var(--text-primary); font-weight: 600; }
-        .form-group input { width: 100%; padding: 0.75rem; border-radius: 0.5rem; border: 1px solid var(--border-color); background: rgba(255,255,255,0.1); color: white; font-size: 1rem; }
+        .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.875rem; color: #0A3161; font-weight: 700; }
+        .form-group input { width: 100%; padding: 0.75rem; border-radius: 0.5rem; border: 1.5px solid #cbd5e1; background: #ffffff; color: #0f172a; font-size: 1rem; font-weight: 500; }
+        .form-group input:focus { outline: none; border-color: #0A3161; box-shadow: 0 0 0 3px rgba(10, 49, 97, 0.15); }
     </style>
 </head>
 <body>

@@ -66,7 +66,7 @@ $schedules = $stmt->fetchAll();
                             <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
                                 <td style="padding: 1rem; font-weight: 500;"><?= htmlspecialchars($sched['subject_code']) ?></td>
                                 <td style="padding: 1rem;"><?= htmlspecialchars($sched['section']) ?></td>
-                                <td style="padding: 1rem; color: var(--accent-yellow);"><?= htmlspecialchars($sched['room_id']) ?></td>
+                                <td style="padding: 1rem; color: #0A3161; font-weight: 700;"><?= htmlspecialchars($sched['room_id']) ?></td>
                                 <td style="padding: 1rem;"><?= htmlspecialchars($sched['day_of_week']) ?></td>
                                 <td style="padding: 1rem;">
                                     <?= date('g:i A', strtotime($sched['start_time'])) ?> - <?= date('g:i A', strtotime($sched['end_time'])) ?>

@@ -176,109 +176,43 @@ if (empty($attendance_feed)) {
             }
         }
 
-        let pulseCountdownTimer = null;
-        let pulseSecondsLeft = 5;
-
         async function toggleDoor(action) {
             const btnA = document.getElementById('btn-door-a');
             const badgeA = document.getElementById('badge-door-a');
             const room = currentSelectedRoom;
 
-            if (action === 'unlock') {
-                // 1. Disable button during pulse
-                if (btnA) btnA.disabled = true;
+            if (btnA) btnA.disabled = true;
 
-                if (pulseCountdownTimer) clearInterval(pulseCountdownTimer);
-                pulseSecondsLeft = 5;
-
-                const updatePulseDisplay = () => {
-                    if (badgeA && currentSelectedRoom === room) {
-                        badgeA.className = 'door-badge unlocked';
-                        badgeA.innerText = `UNLOCKED (Closing in ${pulseSecondsLeft}s...)`;
-                    }
-                };
-                updatePulseDisplay();
-
-                // 2. 5-second countdown timer mirroring the hardware pulse
-                pulseCountdownTimer = setInterval(async () => {
-                    pulseSecondsLeft--;
-                    if (pulseSecondsLeft > 0) {
-                        updatePulseDisplay();
-                    } else {
-                        clearInterval(pulseCountdownTimer);
-                        pulseCountdownTimer = null;
-
-                        // 3. Auto-revert UI to match physical hardware power cut
-                        if (badgeA && currentSelectedRoom === room) {
-                            badgeA.className = 'door-badge locked';
-                            badgeA.innerText = 'LOCKED - Room ' + room;
-                        }
-                        if (btnA) {
-                            btnA.disabled = false;
-                            const unlockSvg = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>`;
-                            btnA.innerHTML = unlockSvg + "Unlock Door";
-                            btnA.onclick = () => toggleDoor('unlock');
-                        }
-
-                        // 4. Sync locked state back to database via update_lock_status.php
-                        try {
-                            await fetch('../../api/update_lock_status.php?status=LOCKED&room=' + encodeURIComponent(room));
-                            refreshDoorStatus(room);
-                        } catch (e) {}
-                    }
-                }, 1000);
-
-                try {
-                    const res = await fetch('../../api/toggle_door.php', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ room_id: room, action: 'unlock' })
-                    });
-                    const data = await res.json();
-                    if (!data.success) {
-                        alert('Error: ' + data.error);
-                        if (pulseCountdownTimer) {
-                            clearInterval(pulseCountdownTimer);
-                            pulseCountdownTimer = null;
-                        }
-                        if (btnA) btnA.disabled = false;
-                        refreshDoorStatus(room);
-                    }
-                } catch (err) {
-                    console.error('Failed to communicate with lock:', err);
-                    if (pulseCountdownTimer) {
-                        clearInterval(pulseCountdownTimer);
-                        pulseCountdownTimer = null;
-                    }
+            try {
+                const res = await fetch('../../api/toggle_door.php', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ room_id: room, action: action })
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    alert('Error: ' + (data.error || 'Failed to toggle door'));
                     if (btnA) btnA.disabled = false;
-                    refreshDoorStatus(room);
+                    return;
                 }
-            } else {
-                // Manual Immediate Lock
-                if (pulseCountdownTimer) {
-                    clearInterval(pulseCountdownTimer);
-                    pulseCountdownTimer = null;
-                }
-                if (badgeA) {
-                    badgeA.className = 'door-badge locked';
-                    badgeA.innerText = 'LOCKED - Room ' + room;
+
+                const isLocked = (action === 'lock' || data.status === 'LOCKED');
+                if (badgeA && currentSelectedRoom === room) {
+                    badgeA.className = isLocked ? 'door-badge locked' : 'door-badge unlocked';
+                    badgeA.innerText = (isLocked ? 'LOCKED' : 'UNLOCKED') + ' - Room ' + room;
                 }
                 if (btnA) {
                     btnA.disabled = false;
                     const unlockSvg = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>`;
-                    btnA.innerHTML = unlockSvg + "Unlock Door";
-                    btnA.onclick = () => toggleDoor('unlock');
+                    const lockSvg = `<svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right: 0.5rem;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>`;
+                    btnA.innerHTML = isLocked ? (unlockSvg + "Unlock Door") : (lockSvg + "Lock Door");
+                    btnA.onclick = () => toggleDoor(isLocked ? 'unlock' : 'lock');
                 }
-                try {
-                    await fetch('../../api/toggle_door.php', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ room_id: room, action: 'lock' })
-                    });
-                    refreshDoorStatus(room);
-                } catch (err) {
-                    refreshDoorStatus(room);
-                }
+                refreshDoorStatus(room);
+            } catch (err) {
+                console.error('Failed to communicate with lock:', err);
+                if (btnA) btnA.disabled = false;
+                refreshDoorStatus(room);
             }
         }
     </script>
@@ -513,7 +447,7 @@ if (empty($attendance_feed)) {
                 const isLocked = data.is_locked;
                 
                 // Update Door Badge and Button (Door A) only if not in active 5s pulse countdown
-                if (!pulseCountdownTimer || currentSelectedRoom !== roomNumber) {
+                if (currentSelectedRoom === roomNumber) {
                     const badgeA = document.getElementById('badge-door-a');
                     if (badgeA) {
                         const lockedHtml = 'LOCKED - Room ' + roomNumber;

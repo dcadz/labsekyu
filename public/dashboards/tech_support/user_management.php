@@ -156,21 +156,21 @@ $students = $studentStmt->fetchAll();
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
         .form-group { margin-bottom: 1rem; }
-        .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.875rem; color: #fff; font-weight: bold; }
-        .form-group input, .form-group select { width: 100%; padding: 0.75rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; }
+        .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.875rem; color: var(--bg-sidebar); font-weight: bold; }
+        .form-group input, .form-group select { width: 100%; padding: 0.75rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; color: #1e293b; background: #ffffff; }
         
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
         .modal-content { background: white; padding: 2rem; border-radius: 0.5rem; width: 90%; max-width: 400px; color: #333; }
         .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
-        .modal-header h3 { margin: 0; }
-        .close-btn { background: none; border: none; font-size: 1.5rem; cursor: pointer; }
+        .modal-header h3 { margin: 0; color: var(--bg-sidebar); }
+        .close-btn { background: none; border: none; font-size: 1.5rem; cursor: pointer; color: #64748b; }
         
         .action-btn { background: none; border: none; cursor: pointer; color: var(--bg-sidebar); display: inline-flex; align-items: center; justify-content: center; padding: 0.25rem; }
         .action-btn:hover { color: var(--accent-blue); }
         .action-btn.delete:hover { color: var(--accent-red); }
 
-        .card { background: var(--bg-card); color: #fff; height: 100%; }
-        .card-header h2 { color: #fff; }
+        .card { background: var(--bg-card); color: var(--text-primary); height: 100%; border: 1px solid var(--border-color); }
+        .card-header h2 { color: var(--bg-sidebar); }
 
         .management-grid {
             display: grid;

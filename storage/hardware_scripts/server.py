@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, Response
 import os
+import sys
 from datetime import datetime, timedelta
 import cv2
 import numpy as np
@@ -9,10 +10,11 @@ import json
 import threading
 import time
 import requests
+import re
 
 app = Flask(__name__)
 
-# Very simple API Key auth for sensitive routes
+# API Key auth for sensitive endpoints
 API_KEY = "labsekyu_secret_key_123!"
 
 from functools import wraps
@@ -24,24 +26,37 @@ def require_api_key(f):
         else:
             return jsonify({'error': 'Unauthorized'}), 401
     return decorated_function
-# Configuration
-DATA_FOLDER = 'entrance_monitoring'
+
+# ==================================================================================
+# --- Path Configurations (Absolute & Resilient) ---
+# ==================================================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FOLDER = os.path.join(BASE_DIR, 'entrance_monitoring')
 ENCODINGS_FILE = os.path.join(DATA_FOLDER, 'face_encodings.pkl')
 DETECTIONS_FILE = os.path.join(DATA_FOLDER, 'detections.json')
 FACES_FOLDER = os.path.join(DATA_FOLDER, 'faces')
+
+# Root fallback path if launched from root
+ALT_DATA_FOLDER = os.path.abspath(os.path.join(BASE_DIR, '..', '..', 'entrance_monitoring'))
+ALT_ENCODINGS_FILE = os.path.join(ALT_DATA_FOLDER, 'face_encodings.pkl')
+
 MAX_ENCODINGS_PER_PERSON = 20
-TOLERANCE = 0.5
-MIN_FACE_SIZE = 50
+TOLERANCE = 0.55      # Balanced tolerance for webcam & ESP32-CAM lighting
+MIN_FACE_SIZE = 35    # Accept faces even when slightly further from the camera
 MODEL = 'hog'
 BACKUP_INTERVAL = 60
 
-ESP32_IN_URL = "http://192.168.0.87:81/stream"
-ESP32_OUT_URL = "http://192.168.0.149:81/stream"
+# Camera hardware stream URLs
+ESP32_IN_URL = "http://192.168.0.87:81/stream"    # Camera A (Log In / Entrance)
+ESP32_OUT_URL = "http://192.168.0.149:81/stream"  # Camera B (Log Out / Exit)
 PHP_LOG_URL = "http://localhost/labsekyu2/public/api/hardware_log.php"
+
+# Strict Attendance Cooldown Timer: 5 minutes (300 seconds)
+COOLDOWN_SECONDS = 300
 
 for folder in [DATA_FOLDER, FACES_FOLDER]:
     if not os.path.exists(folder):
-        os.makedirs(folder)
+        os.makedirs(folder, exist_ok=True)
 
 person_detections = {}
 backup_lock = threading.Lock()
@@ -51,28 +66,77 @@ mjpeg_thread_out = None
 latest_frame_in = b''
 latest_frame_out = b''
 
-# Cooldown logic to prevent rapid log toggling
+# In-memory tracking of recent ping / attendance timestamps
 last_ping_times = {}
-COOLDOWN_SECONDS = 60
 
 def load_encodings():
+    # 1. Primary path
     if os.path.exists(ENCODINGS_FILE):
-        with open(ENCODINGS_FILE, 'rb') as f:
-            return pickle.load(f)
+        try:
+            with open(ENCODINGS_FILE, 'rb') as f:
+                encs = pickle.load(f)
+                if encs:
+                    print(f"[ENCODINGS] Loaded {len(encs)} enrolled individuals from {ENCODINGS_FILE}")
+                    return encs
+        except Exception as e:
+            print(f"[ENCODINGS WARNING] Failed reading {ENCODINGS_FILE}: {e}")
+            
+    # 2. Fallback path
+    if os.path.exists(ALT_ENCODINGS_FILE):
+        try:
+            with open(ALT_ENCODINGS_FILE, 'rb') as f:
+                encs = pickle.load(f)
+                if encs:
+                    print(f"[ENCODINGS] Loaded {len(encs)} enrolled individuals from fallback {ALT_ENCODINGS_FILE}")
+                    return encs
+        except Exception as e:
+            print(f"[ENCODINGS WARNING] Failed reading fallback {ALT_ENCODINGS_FILE}: {e}")
+
+    # 3. Fallback: Scan storage/face_data to auto-build encodings if empty
+    face_data_dir = os.path.abspath(os.path.join(BASE_DIR, '..', 'face_data'))
+    if os.path.exists(face_data_dir):
+        print(f"[ENCODINGS] Scanning {face_data_dir} to auto-enroll students...")
+        encs = {}
+        for fname in os.listdir(face_data_dir):
+            if fname.lower().endswith(('.jpg', '.jpeg', '.png')) and not fname.startswith('.'):
+                uid = os.path.splitext(fname)[0]
+                img_path = os.path.join(face_data_dir, fname)
+                img = cv2.imread(img_path)
+                if img is not None:
+                    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    boxes = face_recognition.face_locations(rgb)
+                    fe = face_recognition.face_encodings(rgb, boxes)
+                    if fe:
+                        encs[uid] = [fe[0]]
+                        print(f" -> Auto-enrolled student: {uid}")
+        if encs:
+            save_encodings(encs)
+            return encs
+
     return {}
 
 def save_encodings(encodings):
-    with open(ENCODINGS_FILE, 'wb') as f:
-        pickle.dump(encodings, f)
+    try:
+        with open(ENCODINGS_FILE, 'wb') as f:
+            pickle.dump(encodings, f)
+        # Also mirror to alternate path
+        if os.path.exists(ALT_DATA_FOLDER):
+            with open(ALT_ENCODINGS_FILE, 'wb') as f:
+                pickle.dump(encodings, f)
+    except Exception as e:
+        print(f"[SAVE ERROR] Failed saving encodings: {e}")
 
 def load_detections():
     if os.path.exists(DETECTIONS_FILE):
-        with open(DETECTIONS_FILE, 'r') as f:
-            data = json.load(f)
-            result = {}
-            for person_id, timestamps in data.items():
-                result[person_id] = [datetime.fromisoformat(ts) for ts in timestamps]
-            return result
+        try:
+            with open(DETECTIONS_FILE, 'r') as f:
+                data = json.load(f)
+                result = {}
+                for person_id, timestamps in data.items():
+                    result[person_id] = [datetime.fromisoformat(ts) for ts in timestamps]
+                return result
+        except:
+            pass
     return {}
 
 def save_detections():
@@ -80,8 +144,11 @@ def save_detections():
         data = {}
         for person_id, timestamps in person_detections.items():
             data[person_id] = [ts.isoformat() for ts in timestamps]
-        with open(DETECTIONS_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
+        try:
+            with open(DETECTIONS_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+        except:
+            pass
 
 def backup_thread():
     while True:
@@ -91,23 +158,23 @@ def backup_thread():
 def mjpeg_consumer_thread(stream_url, device_id):
     global stream_active
     print(f"Starting MJPEG consumer thread for {device_id} at {stream_url}")
+    session = requests.Session()
+    
     while stream_active:
         try:
-            response = requests.get(stream_url, stream=True, timeout=10)
+            response = session.get(stream_url, stream=True, timeout=5)
             if response.status_code != 200:
-                print(f"Failed to connect to {device_id} stream: {response.status_code}")
-                time.sleep(5)
+                print(f"[{device_id}] Failed connecting to stream: HTTP {response.status_code}")
+                time.sleep(3)
                 continue
-            print(f"Connected to {device_id} stream")
+            
+            print(f"[{device_id}] Connected to camera stream successfully!")
             bytes_data = bytes()
+            
             for chunk in response.iter_content(chunk_size=4096):
                 if not stream_active:
                     break
-                import sys
-                print(f"[{device_id}] Received chunk size {len(chunk)}")
-                sys.stdout.flush()
                 bytes_data += chunk
-                # Continuously extract all available frames in the buffer
                 
                 while True:
                     a = bytes_data.find(b'\xff\xd8')
@@ -120,24 +187,16 @@ def mjpeg_consumer_thread(stream_url, device_id):
                         jpg = bytes_data[a:b+2]
                         bytes_data = bytes_data[b+2:]
                         
-                        import sys
-                        print(f"[{device_id}] Extracted frame size: {len(jpg)}")
-                        sys.stdout.flush()
-
                         global latest_frame_in, latest_frame_out
                         if device_id == "IN":
                             latest_frame_in = jpg
                         else:
                             latest_frame_out = jpg
-                            
-                        sys.stdout.flush()
                     else:
-                        # Found EOI before SOI, discard the partial frame
                         bytes_data = bytes_data[a:]
         except Exception as e:
-            print(f"Error connecting to {device_id} camera stream: {e}")
-            import sys; sys.stdout.flush()
-            time.sleep(5)
+            # Handle timeout / reconnection cleanly
+            time.sleep(2)
 
 def is_face_large_enough(face_location):
     top, right, bottom, left = face_location
@@ -151,47 +210,26 @@ def detect_and_encode_faces(image):
     valid_locations = [loc for loc in face_locations if is_face_large_enough(loc)]
     if not valid_locations:
         return [], []
-    face_encodings = face_recognition.face_encodings(rgb_image, valid_locations, num_jitters=2)
+    face_encodings = face_recognition.face_encodings(rgb_image, valid_locations, num_jitters=1)
     return valid_locations, face_encodings
 
 def find_matching_person(face_encoding):
     if not known_face_encodings:
-        return None, 0.0
+        return None, 1.0
     best_person = None
-    best_confidence = 1.0
+    best_distance = 1.0
+    
     for person_id, encodings in known_face_encodings.items():
-        matches = face_recognition.compare_faces(encodings, face_encoding, tolerance=TOLERANCE)
-        if True in matches:
-            face_distances = face_recognition.face_distance(encodings, face_encoding)
-            min_distance = np.min(face_distances)
-            match_count = sum(matches)
-            match_ratio = match_count / len(encodings)
-            confidence_score = (0.7 * min_distance) + (0.3 * (1 - match_ratio))
-            if confidence_score < best_confidence:
-                best_confidence = confidence_score
-                best_person = person_id
-    if best_person and best_confidence < 0.4:
-        return best_person, best_confidence
-    return None, best_confidence
-
-def add_encoding_smart(person_id, new_encoding):
-    if person_id not in known_face_encodings:
-        known_face_encodings[person_id] = []
-    encodings = known_face_encodings[person_id]
-    if len(encodings) < 5:
-        encodings.append(new_encoding)
-        return True
-    distances = face_recognition.face_distance(encodings, new_encoding)
-    avg_distance = np.mean(distances)
-    if avg_distance > 0.3 and len(encodings) < MAX_ENCODINGS_PER_PERSON:
-        encodings.append(new_encoding)
-        return True
-    if len(encodings) >= MAX_ENCODINGS_PER_PERSON:
-        max_dist_idx = np.argmax(distances)
-        if distances[max_dist_idx] > 0.4:
-            encodings[max_dist_idx] = new_encoding
-            return True
-    return False
+        if not encodings:
+            continue
+        distances = face_recognition.face_distance(encodings, face_encoding)
+        min_distance = float(np.min(distances))
+        
+        if min_distance < TOLERANCE and min_distance < best_distance:
+            best_distance = min_distance
+            best_person = person_id
+            
+    return best_person, best_distance
 
 def add_detection(person_id, timestamp):
     if person_id not in person_detections:
@@ -199,6 +237,47 @@ def add_detection(person_id, timestamp):
     person_detections[person_id].append(timestamp)
     cutoff = datetime.now() - timedelta(days=7)
     person_detections[person_id] = [ts for ts in person_detections[person_id] if ts > cutoff]
+
+# ==================================================================================
+# --- Attendance Helper Functions: Database Query & HTTP POST ---
+# ==================================================================================
+def query_student_daily_record(person_id):
+    """
+    1. Query the database for the student's current daily record.
+    """
+    try:
+        url = f"{PHP_LOG_URL}?action=status&uid={person_id}&api_key={API_KEY}"
+        resp = requests.get(url, timeout=3)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception as e:
+        print(f"[STATUS QUERY ERROR] UID {person_id}: {e}")
+    return None
+
+def push_attendance_event(person_id, event_type, room_id=None):
+    """
+    4. Push event instantly via HTTP POST to the PHP backend (hardware_log.php).
+    """
+    try:
+        payload = {
+            'uid': str(person_id),
+            'device_id': event_type,  # 'IN' or 'OUT'
+            'api_key': API_KEY,
+            'format': 'json'
+        }
+        if room_id:
+            payload['room_id'] = room_id
+            
+        resp = requests.post(PHP_LOG_URL, json=payload, timeout=5)
+        print(f"[HTTP POST] {event_type} for UID {person_id} -> Status {resp.status_code}: {resp.text.strip()}")
+        if resp.status_code == 200:
+            try:
+                return resp.json()
+            except:
+                return {'success': True}
+    except Exception as e:
+        print(f"[HTTP POST ERROR] {event_type} for UID {person_id}: {e}")
+    return None
 
 def process_frame(jpg_bytes, device_id):
     try:
@@ -213,27 +292,65 @@ def process_frame(jpg_bytes, device_id):
         
         detected_persons = []
         for idx, (location, encoding) in enumerate(zip(face_locations, face_encodings)):
-            person_id, confidence = find_matching_person(encoding)
+            person_id, distance = find_matching_person(encoding)
+            
             if person_id is not None:
-                # Halt Auto-Learning: Do not add smart encodings here or save encodings on every frame
                 add_detection(person_id, timestamp)
                 detected_persons.append(person_id)
-                
-                # Check cooldown and log to PHP
                 now = time.time()
-                cooldown_key = f"{person_id}_{device_id}"
-                if cooldown_key not in last_ping_times or (now - last_ping_times[cooldown_key]) > COOLDOWN_SECONDS:
-                    last_ping_times[cooldown_key] = now
-                    try:
-                        resp = requests.get(f"{PHP_LOG_URL}?uid={person_id}&device_id={device_id}&api_key={API_KEY}&room_id=307")
-                        print(f"Logged {person_id} to PHP via {device_id}: {resp.text.strip()}")
-                    except Exception as e:
-                        print(f"Failed to log {person_id}: {e}")
+                
+                print(f"[DETECTED] Student ID {person_id} matched (Distance: {distance:.4f}) via Camera {device_id}")
+                
+                # Step 1: Query the database for their current daily record
+                record = query_student_daily_record(person_id)
+                cam_mode = str(device_id).upper()
+                
+                if record and record.get('found'):
+                    has_record_today = record.get('has_record_today', False)
+                    is_currently_in = record.get('is_currently_in', False)
+                    seconds_since_entry = record.get('seconds_since_entry', 0)
+                    student_name = record.get('full_name', person_id)
+
+                    if cam_mode == "IN":
+                        # CAMERA A: ENTRANCE (LOG IN / RE-ENTRY)
+                        if not is_currently_in:
+                            last_in_time = last_ping_times.get(f"{person_id}_IN", 0)
+                            if (now - last_in_time) > 15: # 15s debounce
+                                last_ping_times[f"{person_id}_IN"] = now
+                                event_desc = "RE-ENTRY" if has_record_today else "TIME IN"
+                                print(f"\n>>> [CAMERA A ENTRANCE] Student: {student_name} (ID: {person_id}) -> Logging {event_desc}")
+                                push_attendance_event(person_id, 'IN')
+                        else:
+                            # Already inside the room - do not trigger logout from Camera A
+                            pass
+                    elif cam_mode == "OUT":
+                        # CAMERA B: EXIT (LOG OUT)
+                        if is_currently_in:
+                            # Debounce check to ensure student didn't just walk in seconds ago
+                            last_in_time = last_ping_times.get(f"{person_id}_IN", 0)
+                            if (now - last_in_time) < 10 and last_in_time > 0:
+                                print(f"[CAMERA B IGNORED] {student_name} entered room only {int(now - last_in_time)}s ago.")
+                            else:
+                                last_out_time = last_ping_times.get(f"{person_id}_OUT", 0)
+                                if (now - last_out_time) > 15: # 15s debounce
+                                    last_ping_times[f"{person_id}_OUT"] = now
+                                    print(f"\n>>> [CAMERA B EXIT] Student: {student_name} (ID: {person_id}) -> Logging TIME OUT")
+                                    push_attendance_event(person_id, 'OUT')
+                        else:
+                            # Already outside the room - do not trigger login from Camera B
+                            pass
+                else:
+                    # Direct push if query timed out
+                    last_fallback = last_ping_times.get(f"{person_id}_{cam_mode}", 0)
+                    if (now - last_fallback) > 30:
+                        last_ping_times[f"{person_id}_{cam_mode}"] = now
+                        push_attendance_event(person_id, cam_mode)
         
     except Exception as e:
         print(f"Error processing frame: {e}")
 
 known_face_encodings = load_encodings()
+print(f"Enrolled students in system: {list(known_face_encodings.keys())}")
 person_detections = load_detections()
 
 backup_daemon = threading.Thread(target=backup_thread, daemon=True)
@@ -253,7 +370,7 @@ def frame_processor_thread(device_id):
         if frame and frame != last_processed:
             process_frame(frame, device_id)
             last_processed = frame
-            time.sleep(0.2)  # Give GIL to stream threads
+            time.sleep(0.2)
         else:
             time.sleep(0.1)
 
@@ -263,11 +380,18 @@ processor_thread_in.start()
 processor_thread_out = threading.Thread(target=frame_processor_thread, args=("OUT",), daemon=True)
 processor_thread_out.start()
 
+# ==================================================================================
+# --- Flask Web Server Routes ---
+# ==================================================================================
+@app.route('/video_feed')
 @app.route('/video_feed/<device_id>')
-def video_feed(device_id):
+def video_feed(device_id=None):
+    dev = device_id or request.args.get('cam') or request.args.get('device') or request.args.get('camera') or 'IN'
+    dev = str(dev).upper()
+    is_in = (dev in ['IN', 'A', 'CAMA', 'CAMERA_A', 'ENTRANCE'])
     def generate():
         while True:
-            frame = latest_frame_in if device_id == "IN" else latest_frame_out
+            frame = latest_frame_in if is_in else latest_frame_out
             if not frame:
                 time.sleep(0.1)
                 continue
@@ -286,13 +410,11 @@ def register_face():
         uid = request.form['uid']
         file = request.files['image']
         
-        # Read image
         nparr = np.frombuffer(file.read(), np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if image is None:
             return jsonify({'error': 'Invalid image'}), 400
             
-        # Resize large images to prevent Face API from hanging/crashing
         height, width = image.shape[:2]
         if max(height, width) > 800:
             scale = 800.0 / max(height, width)
@@ -303,7 +425,6 @@ def register_face():
         if len(face_encodings) == 0:
             return jsonify({'error': 'No valid face detected in image'}), 400
             
-        # Only take the largest face
         if len(face_encodings) > 1:
             areas = [(loc[2]-loc[0])*(loc[1]-loc[3]) for loc in face_locations]
             largest_idx = np.argmax(areas)
@@ -315,7 +436,6 @@ def register_face():
             
         person_id = str(uid)
         
-        # Prevent duplicate faces across different users
         existing_person, conf = find_matching_person(face_encoding)
         if existing_person is not None and existing_person != person_id:
             return jsonify({'error': f'Face is already enrolled to Student ID: {existing_person}'}), 400
@@ -373,8 +493,6 @@ def delete_face():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-import re
-
 @app.route('/ocr_schedule', methods=['POST'])
 def ocr_schedule():
     try:
@@ -393,10 +511,8 @@ def ocr_schedule():
             text = pytesseract.image_to_string(image)
         except Exception as e:
             print(f"OCR Warning: {e}")
-            # Fallback to simulated data if Tesseract is not installed
             text = "Subject: IT 401\nSection: BSIT 4-1\nTeacher: John Doe\nRoom: 301\nDay: Monday\nTime: 08:00 AM - 11:00 AM"
 
-        # Basic regex parsing
         data = {
             'subject': '',
             'section': '',
@@ -407,30 +523,23 @@ def ocr_schedule():
             'end_time': ''
         }
 
-        # Subject (e.g. IT 101, COMP 202)
         m_subj = re.search(r'(Subject|Code)[\s:]*([A-Z]+\s*\d+)', text, re.IGNORECASE)
         if m_subj: data['subject'] = m_subj.group(2).strip()
 
-        # Section
         m_sec = re.search(r'(Section)[\s:]*([\w\s-]+)', text, re.IGNORECASE)
         if m_sec: data['section'] = m_sec.group(2).strip()
 
-        # Teacher
         m_teacher = re.search(r'(Teacher|Instructor|Prof)[\s:]*([A-Za-z\s\.]+)', text, re.IGNORECASE)
         if m_teacher: data['teacher'] = m_teacher.group(2).strip()
 
-        # Room
         m_room = re.search(r'(Room)[\s:]*(\d+[A-Z]?)', text, re.IGNORECASE)
         if m_room: data['room'] = m_room.group(2).strip()
 
-        # Day
         m_day = re.search(r'(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)', text, re.IGNORECASE)
         if m_day: data['day'] = m_day.group(1)
 
-        # Time
         m_time = re.search(r'(\d{1,2}:\d{2}\s*(?:AM|PM))\s*(?:-|to)\s*(\d{1,2}:\d{2}\s*(?:AM|PM))', text, re.IGNORECASE)
         if m_time:
-            # Convert to 24h format for HTML select matching
             try:
                 start_dt = datetime.strptime(m_time.group(1).strip(), '%I:%M %p')
                 end_dt = datetime.strptime(m_time.group(2).strip(), '%I:%M %p')
@@ -439,7 +548,6 @@ def ocr_schedule():
             except:
                 pass
         
-        # If fallback text was used, assign it directly if regex didn't catch it perfectly
         if not data['subject'] and "Subject: IT 401" in text:
             data['subject'] = "IT 401"
             data['section'] = "BSIT 4-1"
@@ -457,7 +565,9 @@ def ocr_schedule():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 if __name__ == '__main__':
-    print("=" * 60)
-    print("Face Recognition System")
-    print("=" * 60)
+    print("=" * 65)
+    print("  LABSEKYU AI Vision Server (Face Attendance & Stream Relay)")
+    print(f"  Attendance Cooldown: {COOLDOWN_SECONDS}s (5 minutes)")
+    print(f"  Enrolled Students: {list(known_face_encodings.keys())}")
+    print("=" * 65)
     app.run(host='0.0.0.0', port=8000, debug=False, threaded=True)

@@ -26,24 +26,6 @@ $is_locked = ($action === 'lock') ? 1 : 0;
 $user_id = $_SESSION['user_id'] ?? 'Unknown';
 $role = $_SESSION['role'] ?? 'Unknown';
 
-if ($role === 'teacher') {
-    // 15-minute grace period check
-    $sql = "SELECT schedule_id FROM class_schedules 
-            WHERE teacher_id = ? 
-              AND room_id = ? 
-              AND day_of_week = DAYNAME(CURDATE())
-              AND TIME(NOW()) >= SUBTIME(start_time, '00:15:00') 
-              AND TIME(NOW()) <= ADDTIME(end_time, '00:15:00')";
-    $checkStmt = $pdo->prepare($sql);
-    $checkStmt->execute([$user_id, $room_id]);
-    $validSchedule = $checkStmt->fetch();
-
-    if (!$validSchedule) {
-        echo json_encode(['success' => false, 'error' => 'Access Denied. You are outside the 15-minute grace period for this room.']);
-        exit();
-    }
-}
-
 try {
     // Fetch user name
     $userNameStmt = $pdo->prepare("SELECT full_name FROM users WHERE id = :user_id");
@@ -51,35 +33,60 @@ try {
     $userRow = $userNameStmt->fetch();
     $userName = $userRow ? $userRow['full_name'] : 'Unknown User';
 
+    $statusStr = ($is_locked === 1) ? 'LOCKED' : 'UNLOCKED';
+
+    // 1. Synchronize master room_status in system_settings
+    $settingStmt = $pdo->prepare("
+        INSERT INTO system_settings (setting_key, setting_value) 
+        VALUES ('room_status', :status) 
+        ON DUPLICATE KEY UPDATE setting_value = :status
+    ");
+    $settingStmt->execute([':status' => $statusStr]);
+
+    // 2. Handle 'ALL' rooms mode for tech_support
     if (strtolower($room_id) === 'all' && $role === 'tech_support') {
         $stmt = $pdo->prepare("UPDATE door_status SET is_locked = :is_locked, last_override_by = :user_id");
-        $stmt->execute([':is_locked' => $is_locked, ':user_id' => $user_id]);
+        $stmt->execute([':is_locked' => $is_locked, ':user_id' => $userName]);
 
         $actionText = ($action === 'lock') ? "All building doors locked" : "All building doors unlocked";
         $alertStmt = $pdo->prepare("INSERT INTO system_alerts (severity, location, event_type) VALUES ('Med', 'Building', :event_type)");
         $alertStmt->execute([':event_type' => $actionText . ' by ' . $userName]);
 
-        echo json_encode(['success' => true, 'is_locked' => $is_locked, 'all_rooms' => true]);
+        echo json_encode(['success' => true, 'is_locked' => $is_locked, 'status' => $statusStr, 'all_rooms' => true]);
         exit();
     }
 
-    $stmt = $pdo->prepare("INSERT INTO door_status (room_id, is_locked, last_override_by) VALUES (:room_id, :is_locked, :user_id) ON DUPLICATE KEY UPDATE is_locked = :is_locked, last_override_by = :user_id");
+    // 3. Update room in door_status
+    $stmt = $pdo->prepare("
+        INSERT INTO door_status (room_id, is_locked, last_override_by) 
+        VALUES (:room_id, :is_locked, :user_id) 
+        ON DUPLICATE KEY UPDATE is_locked = :is_locked, last_override_by = :user_id
+    ");
     $stmt->execute([
         ':room_id' => $room_id,
         ':is_locked' => $is_locked,
-        ':user_id' => $user_id
+        ':user_id' => $userName
     ]);
 
-    $actionText = ($action === 'lock') ? "Room {$room_id} closed" : "Room {$room_id} opened";
+    // Also update any other rooms if single hardware lock controls the lab
+    if ($is_locked === 0) {
+        $pdo->prepare("UPDATE door_status SET is_locked = 0 WHERE room_id = '101' OR room_id = :room_id")->execute([':room_id' => $room_id]);
+    } else {
+        $pdo->prepare("UPDATE door_status SET is_locked = 1 WHERE room_id = '101' OR room_id = :room_id")->execute([':room_id' => $room_id]);
+    }
+
+    $actionText = ($action === 'lock') ? "Room {$room_id} locked" : "Room {$room_id} unlocked";
     
-    // Also log to system_alerts
-    $alertStmt = $pdo->prepare("INSERT INTO system_alerts (severity, location, event_type) VALUES ('Low', :location, :event_type)");
-    $alertStmt->execute([
-        ':location' => $room_id,
-        ':event_type' => $actionText . ' by ' . $userName
-    ]);
+    // Log to system_alerts
+    try {
+        $alertStmt = $pdo->prepare("INSERT INTO system_alerts (severity, location, event_type) VALUES ('Low', :location, :event_type)");
+        $alertStmt->execute([
+            ':location' => $room_id,
+            ':event_type' => $actionText . ' by ' . $userName
+        ]);
+    } catch (Exception $ex) {}
 
-    echo json_encode(['success' => true, 'is_locked' => $is_locked]);
+    echo json_encode(['success' => true, 'is_locked' => $is_locked, 'status' => $statusStr, 'room_id' => $room_id]);
 } catch (PDOException $e) {
     http_response_code(500);
     echo json_encode(['success' => false, 'error' => 'Database error']);

@@ -1,187 +1,392 @@
 <?php
+// core/log.php - LABSEKYU Hardware & AI Attendance Logging Engine
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-$api_key = isset($_GET['api_key']) ? $_GET['api_key'] : '';
-$valid_api_key = 'labsekyu_secret_key_123!';
+date_default_timezone_set('Asia/Manila');
+require_once __DIR__ . '/../config/database.php';
 
-if (!isset($_SESSION['user_id']) && $api_key !== $valid_api_key) {
+// Accept API Key from GET, POST, JSON, or HTTP Headers
+$rawInput = file_get_contents('php://input');
+$jsonInput = json_decode($rawInput, true);
+$params = is_array($jsonInput) ? array_merge($_GET, $_POST, $jsonInput) : array_merge($_GET, $_POST);
+
+$headerApiKey = $_SERVER['HTTP_X_API_KEY'] ?? '';
+$apiKey = $params['api_key'] ?? $headerApiKey ?? '';
+$validApiKey = 'labsekyu_secret_key_123!';
+
+if (!isset($_SESSION['user_id']) && $apiKey !== $validApiKey) {
     http_response_code(401);
     header('Content-Type: application/json');
     echo json_encode(['success' => false, 'error' => 'Unauthorized']);
     exit;
 }
 
-// core/log.php
-date_default_timezone_set('Asia/Manila');
-require_once __DIR__ . '/../config/database.php';
+$action = strtolower(trim($params['action'] ?? ''));
+$uid = trim($params['uid'] ?? '');
+$device_id = strtoupper(trim($params['device_id'] ?? 'IN'));
+$room_id = trim($params['room_id'] ?? '');
 
-if (isset($_GET['uid'])) {
-    $uid = trim($_GET['uid']);
-    $device_id = isset($_GET['device_id']) ? trim($_GET['device_id']) : 'Unknown';
-    $date = date("Y-m-d");
-    $time = date("H:i:s");
-    $current_datetime = date("Y-m-d H:i:s");
-    $day_of_week = date("l");
+if (empty($uid)) {
+    http_response_code(400);
+    if (!empty($params)) {
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'error' => 'Missing student UID']);
+    } else {
+        echo "BAD_REQUEST";
+    }
+    exit;
+}
 
-    // Fetch room status
-    $stmt = $pdo->prepare("SELECT setting_value FROM system_settings WHERE setting_key='room_status'");
-    $stmt->execute();
-    $room_status_row = $stmt->fetch();
-    $room_status = $room_status_row ? $room_status_row['setting_value'] : 'LOCKED';
+$date = date("Y-m-d");
+$time = date("H:i:s");
+$current_datetime = date("Y-m-d H:i:s");
+$day_of_week = date("l");
 
-    // Verify user exists in the users table using role_id (RFID tag)
-    $stmt = $pdo->prepare("SELECT id, full_name, role, section FROM users WHERE role_id=:uid");
-    $stmt->execute([':uid' => $uid]);
-    $user = $stmt->fetch();
+// 1. Verify user exists in the database by role_id (Student ID / RFID) or id
+$stmt = $pdo->prepare("SELECT id, full_name, role, section, role_id FROM users WHERE role_id = :uid OR id = :uid LIMIT 1");
+$stmt->execute([':uid' => $uid]);
+$user = $stmt->fetch();
+
+if (!$user) {
+    // Stage unrecognized UID for fast registration in UI
+    $stgStmt = $pdo->prepare("INSERT INTO system_settings (setting_key, setting_value) VALUES ('staged_uid', :uid) ON DUPLICATE KEY UPDATE setting_value = :uid");
+    $stgStmt->execute([':uid' => $uid]);
     
-    if (!$user) {
-        $stmt = $pdo->prepare("UPDATE system_settings SET setting_value=:uid WHERE setting_key='staged_uid'");
-        $stmt->execute([':uid' => $uid]);
+    if (isset($params['format']) && $params['format'] === 'json' || !empty($jsonInput)) {
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'found' => false, 'status' => 'UNREGISTERED', 'uid' => $uid]);
+    } else {
         echo "UNREGISTERED";
-        exit();
     }
-    
-    $student_id = $user['id'];
-    $name = $user['full_name'];
+    exit;
+}
 
-    // Cooldown logic: Prevent toggling IN/OUT within 2 minutes
-    $time_threshold = date("Y-m-d H:i:s", strtotime("-2 minutes"));
-    $stmt = $pdo->prepare("SELECT entry_timestamp, exit_timestamp FROM attendance_logs WHERE student_id=:student_id AND log_date=:date ORDER BY log_id DESC LIMIT 1");
-    $stmt->execute([':student_id' => $student_id, ':date' => $date]);
-    $recent_log = $stmt->fetch();
-    
-    if ($recent_log) {
-        if ($recent_log['exit_timestamp'] === NULL) {
-            if ($recent_log['entry_timestamp'] >= $time_threshold) {
-                echo "COOLDOWN_IN_EFFECT\n" . $name;
-                exit();
+$student_id = $user['id'];
+$name = $user['full_name'];
+$role_id = $user['role_id'];
+$student_section = trim($user['section'] ?? '');
+
+// 2. Resolve Class Schedule for this Student
+// Priority 1: Current active schedule for student's section (with 30m grace period)
+$schedule = null;
+if (!empty($student_section)) {
+    $stmt = $pdo->prepare("
+        SELECT schedule_id, start_time, end_time, section, room_id, subject_code 
+        FROM class_schedules 
+        WHERE day_of_week = :day 
+          AND TRIM(REPLACE(REPLACE(section, ' ', ''), '-', '')) = TRIM(REPLACE(REPLACE(:section, ' ', ''), '-', ''))
+          AND :time >= SUBTIME(start_time, '00:30:00') 
+          AND :time <= ADDTIME(end_time, '00:30:00')
+        LIMIT 1
+    ");
+    $stmt->execute([':day' => $day_of_week, ':section' => $student_section, ':time' => $time]);
+    $schedule = $stmt->fetch(PDO::FETCH_ASSOC);
+}
+
+// Priority 2: Student's section schedule today (any time today)
+if (!$schedule && !empty($student_section)) {
+    $stmt = $pdo->prepare("
+        SELECT schedule_id, start_time, end_time, section, room_id, subject_code 
+        FROM class_schedules 
+        WHERE day_of_week = :day 
+          AND TRIM(REPLACE(REPLACE(section, ' ', ''), '-', '')) = TRIM(REPLACE(REPLACE(:section, ' ', ''), '-', ''))
+        ORDER BY start_time ASC 
+        LIMIT 1
+    ");
+    $stmt->execute([':day' => $day_of_week, ':section' => $student_section]);
+    $schedule = $stmt->fetch(PDO::FETCH_ASSOC);
+}
+
+// Priority 3: Match by room_id if room was provided and schedule matches
+if (!$schedule && !empty($room_id)) {
+    $stmt = $pdo->prepare("SELECT schedule_id, start_time, end_time, section, room_id, subject_code FROM class_schedules WHERE day_of_week = :day AND :time >= SUBTIME(start_time, '00:30:00') AND :time <= end_time AND room_id = :room LIMIT 1");
+    $stmt->execute([':day' => $day_of_week, ':time' => $time, ':room' => $room_id]);
+    $schedule = $stmt->fetch(PDO::FETCH_ASSOC);
+}
+
+// Priority 4: Latest schedule for student's section
+if (!$schedule && !empty($student_section)) {
+    $stmt = $pdo->prepare("
+        SELECT schedule_id, start_time, end_time, section, room_id, subject_code 
+        FROM class_schedules 
+        WHERE TRIM(REPLACE(REPLACE(section, ' ', ''), '-', '')) = TRIM(REPLACE(REPLACE(:section, ' ', ''), '-', ''))
+        ORDER BY schedule_id DESC 
+        LIMIT 1
+    ");
+    $stmt->execute([':section' => $student_section]);
+    $schedule = $stmt->fetch(PDO::FETCH_ASSOC);
+}
+
+$schedule_id = $schedule ? $schedule['schedule_id'] : null;
+
+// Total class duration in seconds
+$total_class_duration = 0;
+if ($schedule && !empty($schedule['start_time']) && !empty($schedule['end_time'])) {
+    $s_ts = strtotime($date . ' ' . $schedule['start_time']);
+    $e_ts = strtotime($date . ' ' . $schedule['end_time']);
+    if ($e_ts > $s_ts) {
+        $total_class_duration = $e_ts - $s_ts;
+    }
+}
+
+// 3. Query all attendance records for this student today
+$schedFilter = $schedule_id ? "AND schedule_id = :sched_id" : "";
+$queryParams = [':student_id' => $student_id, ':date' => $date];
+if ($schedule_id) $queryParams[':sched_id'] = $schedule_id;
+
+$stmt = $pdo->prepare("
+    SELECT * 
+    FROM attendance_logs 
+    WHERE student_id = :student_id AND log_date = :date $schedFilter 
+    ORDER BY log_id ASC
+");
+$stmt->execute($queryParams);
+$today_sessions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+$has_record_today = (!empty($today_sessions));
+
+// Check if student currently has an OPEN session (exit_timestamp IS NULL)
+$open_session = null;
+foreach ($today_sessions as $sess) {
+    if (empty($sess['exit_timestamp'])) {
+        $open_session = $sess;
+        break;
+    }
+}
+$is_currently_in = ($open_session !== null);
+
+// Calculate cumulative stay seconds so far today
+$cumulative_stay_seconds = 0;
+foreach ($today_sessions as $sess) {
+    $in_time = strtotime($sess['entry_timestamp']);
+    if ($in_time) {
+        if (!empty($sess['exit_timestamp'])) {
+            $out_time = strtotime($sess['exit_timestamp']);
+            if ($out_time >= $in_time) {
+                $cumulative_stay_seconds += ($out_time - $in_time);
             }
         } else {
-            if ($recent_log['exit_timestamp'] >= $time_threshold) {
-                echo "COOLDOWN_IN_EFFECT\n" . $name;
-                exit();
+            // Open session actively accumulating
+            $now_time = time();
+            if ($now_time >= $in_time) {
+                $cumulative_stay_seconds += ($now_time - $in_time);
             }
         }
     }
+}
 
-    $stmt = $pdo->prepare("SELECT log_id FROM attendance_logs WHERE student_id=:student_id AND log_date=:date AND exit_timestamp IS NULL");
-    $stmt->execute([':student_id' => $student_id, ':date' => $date]);
-    $open_log = $stmt->fetch();
-    $is_currently_in = $open_log ? true : false;
-    $log_id = $is_currently_in ? $open_log['log_id'] : null;
+$stay_percentage = 0.00;
+if ($total_class_duration > 0) {
+    $stay_percentage = round(($cumulative_stay_seconds / $total_class_duration) * 100, 2);
+    if ($stay_percentage > 100) $stay_percentage = 100.00;
+} else {
+    $stay_percentage = $is_currently_in ? 100.00 : 0.00;
+}
 
-    if ($device_id === 'IN' || ($device_id !== 'OUT' && !$is_currently_in)) {
-        if ($is_currently_in) {
+// ACTION: STATUS QUERY (Called by server.py to inspect student presence)
+if ($action === 'status') {
+    header('Content-Type: application/json');
+    echo json_encode([
+        'success' => true,
+        'found' => true,
+        'user_id' => (int)$student_id,
+        'student_id' => $role_id,
+        'full_name' => $name,
+        'section' => $user['section'],
+        'schedule_id' => $schedule_id,
+        'has_record_today' => $has_record_today,
+        'is_currently_in' => $is_currently_in,
+        'open_log_id' => $open_session ? (int)$open_session['log_id'] : null,
+        'entry_timestamp' => $open_session ? $open_session['entry_timestamp'] : ($today_sessions[0]['entry_timestamp'] ?? null),
+        'exit_timestamp' => end($today_sessions)['exit_timestamp'] ?? null,
+        'stay_percentage' => $stay_percentage,
+        'cumulative_stay_seconds' => $cumulative_stay_seconds,
+        'status' => $today_sessions ? end($today_sessions)['status'] : null
+    ]);
+    exit;
+}
+
+// 4. Process Attendance Events
+$isJsonRequest = (!empty($jsonInput) || (isset($params['format']) && $params['format'] === 'json'));
+
+// --- LOG IN / RE-ENTRY (CAMERA A) ---
+if ($device_id === 'IN') {
+    if ($is_currently_in) {
+        // Student is already inside the room
+        if ($isJsonRequest) {
+            header('Content-Type: application/json');
+            echo json_encode([
+                'success' => true,
+                'event' => 'ALREADY_IN',
+                'message' => "{$name} is already in the room.",
+                'is_currently_in' => true,
+                'entry_timestamp' => $open_session['entry_timestamp']
+            ]);
+        } else {
             echo "ALREADY_IN\n" . $name;
-        } else {
-            // Find active class schedule (allow check-in 30 mins early)
-            $room_id = isset($_GET['room_id']) ? trim($_GET['room_id']) : null;
-            if ($room_id) {
-                $stmt = $pdo->prepare("SELECT schedule_id, start_time, end_time, section FROM class_schedules WHERE day_of_week=:day AND :time >= SUBTIME(start_time, '00:30:00') AND :time <= end_time AND room_id=:room LIMIT 1");
-                $stmt->execute([':day' => $day_of_week, ':time' => $time, ':room' => $room_id]);
-            } else {
-                $stmt = $pdo->prepare("SELECT schedule_id, start_time, end_time, section FROM class_schedules WHERE day_of_week=:day AND :time >= SUBTIME(start_time, '00:30:00') AND :time <= end_time LIMIT 1");
-                $stmt->execute([':day' => $day_of_week, ':time' => $time]);
-            }
-            $schedule = $stmt->fetch();
-            $schedule_id = $schedule ? $schedule['schedule_id'] : null;
-            
-            // Student restrictions
-            if ($user['role'] === 'student') {
-                if (!$schedule) {
-                    echo "NO_SCHEDULE\n" . $name;
-                    exit();
-                }
-                if ($user['section'] !== $schedule['section']) {
-                    echo "INVALID_SECTION\n" . $name . "\n" . "Required: " . $schedule['section'];
-                    exit();
-                }
-            }
-            
-            // Determine Late or Present based on schedule (15 min grace period)
-            $status = "Present";
-            if ($schedule) {
-                $start_time_ts = strtotime($date . ' ' . $schedule['start_time']);
-                $current_ts = strtotime($current_datetime);
-                // 15 minutes = 900 seconds
-                if ($current_ts > ($start_time_ts + 900)) {
-                    $status = "Late";
-                }
-            }
-            
-            $stmt = $pdo->prepare("INSERT INTO attendance_logs (student_id, schedule_id, log_date, entry_timestamp, status, sync_source) VALUES (:student_id, :schedule_id, :date, :entry, :status, 'Live')");
-            $inserted = $stmt->execute([
-                ':student_id' => $student_id,
-                ':schedule_id' => $schedule_id,
-                ':date' => $date,
-                ':entry' => $current_datetime,
-                ':status' => $status
-            ]);
-            
-            if ($inserted) {
-                echo "IN_" . strtoupper($status) . "\n" . $name;
-            } else {
-                echo "ERROR";
-            }
         }
-    } else if ($device_id === 'OUT' || ($device_id !== 'IN' && $is_currently_in)) {
-        if ($is_currently_in) {
-            // Get the open log to find the entry timestamp and schedule id
-            $stmt = $pdo->prepare("SELECT entry_timestamp, schedule_id, status FROM attendance_logs WHERE log_id=:log_id");
-            $stmt->execute([':log_id' => $log_id]);
-            $current_log = $stmt->fetch();
-            
-            $stay_percentage = 0.00;
-            $new_status = $current_log['status'];
-            
-            if ($current_log['schedule_id']) {
-                $stmt = $pdo->prepare("SELECT start_time, end_time FROM class_schedules WHERE schedule_id=:schedule_id");
-                $stmt->execute([':schedule_id' => $current_log['schedule_id']]);
-                $schedule = $stmt->fetch();
-                
-                if ($schedule) {
-                    $entry_time = strtotime($current_log['entry_timestamp']);
-                    $exit_time = strtotime($current_datetime);
-                    $actual_duration = $exit_time - $entry_time;
-                    
-                    $start_time = strtotime($date . ' ' . $schedule['start_time']);
-                    $end_time = strtotime($date . ' ' . $schedule['end_time']);
-                    $total_class_duration = $end_time - $start_time;
-                    
-                    if ($total_class_duration > 0) {
-                        $stay_percentage = ($actual_duration / $total_class_duration) * 100;
-                        if ($stay_percentage > 100) $stay_percentage = 100;
-                        
-                        // If they didn't complete 85% of class, marked as Absent.
-                        if ($stay_percentage < 85) {
-                            $new_status = 'Absent';
-                        }
-                    }
-                }
-            } else {
-                $stay_percentage = 100.00;
-            }
-            
-            $stmt = $pdo->prepare("UPDATE attendance_logs SET exit_timestamp=:exit, stay_percentage=:pct, status=:status WHERE log_id=:log_id");
-            $updated = $stmt->execute([
-                ':exit' => $current_datetime,
-                ':pct' => $stay_percentage,
-                ':status' => $new_status,
-                ':log_id' => $log_id
+        exit;
+    }
+
+    // Determine initial status based on first entry vs class schedule (15 mins grace period)
+    $firstSession = $today_sessions[0] ?? null;
+    $initial_status = "Present";
+    if ($firstSession) {
+        // If already entered earlier today, retain the initial on-time/late status
+        $initial_status = ($firstSession['status'] === 'Late') ? 'Late' : 'Present';
+    } else if ($schedule && !empty($schedule['start_time'])) {
+        $start_time_ts = strtotime($date . ' ' . $schedule['start_time']);
+        $current_ts = strtotime($current_datetime);
+        if ($current_ts > ($start_time_ts + 900)) { // 15 mins
+            $initial_status = "Late";
+        }
+    }
+
+    // Insert a new session log row (entry_timestamp = NOW, exit_timestamp = NULL)
+    $insertStmt = $pdo->prepare("
+        INSERT INTO attendance_logs (student_id, schedule_id, log_date, entry_timestamp, status, sync_source) 
+        VALUES (:student_id, :schedule_id, :date, :entry, :status, 'Live')
+    ");
+    $inserted = $insertStmt->execute([
+        ':student_id' => $student_id,
+        ':schedule_id' => $schedule_id,
+        ':date' => $date,
+        ':entry' => $current_datetime,
+        ':status' => $initial_status
+    ]);
+
+    if ($inserted) {
+        $is_reentry = !empty($today_sessions);
+        if ($isJsonRequest) {
+            header('Content-Type: application/json');
+            echo json_encode([
+                'success' => true,
+                'event' => 'TIME_IN',
+                'is_reentry' => $is_reentry,
+                'student_id' => $role_id,
+                'full_name' => $name,
+                'status' => $initial_status,
+                'schedule_id' => $schedule_id,
+                'entry_timestamp' => $current_datetime,
+                'formatted_time' => date('g:i A', strtotime($current_datetime))
             ]);
-            
-            if ($updated) {
-                echo "OUT_SUCCESS\n" . $name;
-            } else {
-                echo "ERROR";
-            }
+        } else {
+            echo "IN_" . strtoupper($initial_status) . "\n" . $name;
+        }
+    } else {
+        http_response_code(500);
+        echo $isJsonRequest ? json_encode(['success' => false, 'error' => 'Database insert error']) : "ERROR";
+    }
+    exit;
+
+// --- LOG OUT (CAMERA B) ---
+} else if ($device_id === 'OUT') {
+    if (!$is_currently_in || !$open_session) {
+        // Student is already logged out
+        if ($isJsonRequest) {
+            header('Content-Type: application/json');
+            echo json_encode([
+                'success' => false,
+                'error' => 'NOT_IN',
+                'message' => "{$name} is not currently logged in room."
+            ]);
         } else {
             echo "NOT_IN\n" . $name;
         }
+        exit;
     }
-} else {
-    echo "BAD_REQUEST";
+
+    $log_id = $open_session['log_id'];
+
+    // 1. Close open session with current timestamp
+    $closeStmt = $pdo->prepare("UPDATE attendance_logs SET exit_timestamp = :exit WHERE log_id = :log_id");
+    $closeStmt->execute([':exit' => $current_datetime, ':log_id' => $log_id]);
+
+    // 2. Re-calculate total cumulative stay seconds across ALL completed sessions today
+    $stmt = $pdo->prepare("
+        SELECT entry_timestamp, exit_timestamp, status 
+        FROM attendance_logs 
+        WHERE student_id = :student_id AND log_date = :date $schedFilter 
+        ORDER BY log_id ASC
+    ");
+    $stmt->execute($queryParams);
+    $allSessions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    $total_stay = 0;
+    foreach ($allSessions as $sess) {
+        $in_t = strtotime($sess['entry_timestamp']);
+        $out_t = !empty($sess['exit_timestamp']) ? strtotime($sess['exit_timestamp']) : strtotime($current_datetime);
+        if ($in_t && $out_t >= $in_t) {
+            $total_stay += ($out_t - $in_t);
+        }
+    }
+
+    $cumulative_percentage = 0.00;
+    if ($total_class_duration > 0) {
+        $cumulative_percentage = round(($total_stay / $total_class_duration) * 100, 2);
+        if ($cumulative_percentage > 100) $cumulative_percentage = 100.00;
+    } else {
+        $cumulative_percentage = 100.00;
+    }
+
+    // 3. Strict 85% Stay Rule Enforcement:
+    // "as long as the students stays 85 percent in the room during the class schedule then it marks as present.
+    // however, if the students log out and did not go back to the room then make the status as absent
+    // if the students fails to re log in in camera a after they go out."
+    if ($cumulative_percentage < 85.00) {
+        $final_status = 'Absent';
+    } else {
+        // Reached 85% requirement:
+        // Check if student was originally late on first entry
+        $firstSession = $allSessions[0] ?? null;
+        $isLateInitial = false;
+        if ($firstSession && $schedule && !empty($schedule['start_time'])) {
+            $class_start_ts = strtotime($date . ' ' . $schedule['start_time']);
+            $first_entry_ts = strtotime($firstSession['entry_timestamp']);
+            if ($first_entry_ts > ($class_start_ts + 900)) {
+                $isLateInitial = true;
+            }
+        }
+        $final_status = $isLateInitial ? 'Late' : 'Present';
+    }
+
+    // 4. Update the closed session and sync status across all rows for this class
+    $updateStmt = $pdo->prepare("
+        UPDATE attendance_logs 
+        SET exit_timestamp = :exit, stay_percentage = :pct, status = :status 
+        WHERE log_id = :log_id
+    ");
+    $updated = $updateStmt->execute([
+        ':exit' => $current_datetime,
+        ':pct' => $cumulative_percentage,
+        ':status' => $final_status,
+        ':log_id' => $log_id
+    ]);
+
+    if ($updated) {
+        if ($isJsonRequest) {
+            header('Content-Type: application/json');
+            echo json_encode([
+                'success' => true,
+                'event' => 'TIME_OUT',
+                'student_id' => $role_id,
+                'full_name' => $name,
+                'status' => $final_status,
+                'stay_percentage' => $cumulative_percentage,
+                'total_stay_seconds' => $total_stay,
+                'exit_timestamp' => $current_datetime,
+                'formatted_time' => date('g:i A', strtotime($current_datetime))
+            ]);
+        } else {
+            echo "OUT_SUCCESS\n" . $name;
+        }
+    } else {
+        http_response_code(500);
+        echo $isJsonRequest ? json_encode(['success' => false, 'error' => 'Database update error']) : "ERROR";
+    }
+    exit;
 }
-?>
+
+echo "BAD_REQUEST";

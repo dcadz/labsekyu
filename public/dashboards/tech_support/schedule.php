@@ -121,16 +121,18 @@ $schedules = $schedStmt->fetchAll();
     <!-- SweetAlert2 CDN -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
-        .form-group { margin-bottom: 1rem; }
-        .form-group label { display: block; margin-bottom: 0.5rem; font-size: 0.875rem; color: #fff; font-weight: bold; }
-        .form-group input, .form-group select { width: 100%; padding: 0.75rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; }
+        .form-group { margin-bottom: 1.25rem; }
+        .form-group label { display: block !important; margin-bottom: 0.4rem !important; font-size: 0.875rem !important; color: #0A3161 !important; font-weight: 700 !important; }
+        .form-group input, .form-group select { width: 100% !important; padding: 0.75rem !important; border: 1.5px solid #cbd5e1 !important; border-radius: 0.5rem !important; color: #0f172a !important; background: #ffffff !important; font-size: 0.95rem !important; font-weight: 500 !important; box-sizing: border-box !important; }
+        .form-group input::placeholder { color: #64748b !important; opacity: 1 !important; font-weight: 400 !important; }
+        .form-group input:focus, .form-group select:focus { outline: none !important; border-color: #0A3161 !important; box-shadow: 0 0 0 3px rgba(10, 49, 97, 0.15) !important; }
         
-        .action-btn { background: none; border: none; cursor: pointer; color: var(--bg-sidebar); display: inline-flex; align-items: center; justify-content: center; padding: 0.25rem; }
-        .action-btn:hover { color: var(--accent-blue); }
-        .action-btn.delete:hover { color: var(--accent-red); }
+        .action-btn { background: none; border: none; cursor: pointer; color: #0A3161; display: inline-flex; align-items: center; justify-content: center; padding: 0.25rem; }
+        .action-btn:hover { color: #2563eb; }
+        .action-btn.delete:hover { color: #dc2626; }
 
-        .card { background: var(--bg-card); color: #fff; }
-        .card-header h2 { color: #fff; }
+        .card { background: #ffffff !important; color: #0f172a !important; border: 1px solid #cbd5e1 !important; }
+        .card-header h2, #form-title { color: #0A3161 !important; font-weight: 700 !important; font-size: 1.15rem !important; }
 
         .schedule-grid {
             display: grid;
@@ -143,8 +145,8 @@ $schedules = $schedStmt->fetchAll();
         }
         
         .loading-spinner {
-            border: 4px solid rgba(255,255,255,0.3);
-            border-top: 4px solid #fff;
+            border: 4px solid rgba(10, 49, 97, 0.2);
+            border-top: 4px solid var(--bg-sidebar);
             border-radius: 50%;
             width: 24px;
             height: 24px;
@@ -205,28 +207,28 @@ $schedules = $schedStmt->fetchAll();
             <div style="display: flex; flex-direction: column; gap: 2rem;">
                 
                 <!-- OCR Scan Schedule Form -->
-                <div class="card" style="margin: 0; background: linear-gradient(135deg, rgba(59,130,246,0.1) 0%, rgba(37,99,235,0.1) 100%); border: 1px solid rgba(59,130,246,0.3);">
-                    <div class="card-header" style="border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem; margin-bottom: 1rem;">
-                        <h2 style="display: flex; align-items: center; gap: 0.5rem;">
+                <div class="card" style="margin: 0; background: #f0f7ff; border: 1.5px solid #93c5fd;">
+                    <div class="card-header" style="border-bottom: 1px solid #bfdbfe; padding-bottom: 0.5rem; margin-bottom: 1rem;">
+                        <h2 style="display: flex; align-items: center; gap: 0.5rem; color: var(--bg-sidebar);">
                             <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
                             Scan Schedule
                         </h2>
                     </div>
-                    <p style="font-size: 0.875rem; color: #cbd5e1; margin-bottom: 1rem;">Upload a picture of a schedule to automatically extract and fill the form below.</p>
+                    <p style="font-size: 0.875rem; color: #334155; margin-bottom: 1rem; font-weight: 500;">Upload a picture of a schedule to automatically extract and fill the form below.</p>
                     
                     <div class="form-group">
-                        <input type="file" id="schedule-image" accept="image/*" style="background: rgba(0,0,0,0.2); border: 1px dashed rgba(255,255,255,0.3); padding: 1.5rem; text-align: center; cursor: pointer; color: white;">
+                        <input type="file" id="schedule-image" accept="image/*" style="background: #ffffff; border: 1.5px dashed #3b82f6; padding: 1.25rem; text-align: center; cursor: pointer; color: #1e293b; width: 100%; border-radius: 0.5rem;">
                     </div>
                     <button type="button" id="scan-btn" class="btn btn-primary" style="width: 100%; border-radius: 0.5rem;" onclick="scanSchedule()">
                         Scan Image
                     </button>
-                    <div id="scan-result" style="margin-top: 1rem; font-size: 0.875rem; color: #10b981; display: none;">Scan successful! Data applied below. Please review.</div>
+                    <div id="scan-result" style="margin-top: 1rem; font-size: 0.875rem; color: #15803d; font-weight: 600; display: none;">Scan successful! Data applied below. Please review.</div>
                 </div>
 
                 <!-- Add/Edit Class Schedule Form -->
-                <div class="card" style="margin: 0; height: 100%;">
-                    <div class="card-header" style="align-items: center;">
-                        <h2 id="form-title">Add Class Schedule</h2>
+                <div class="card" style="margin: 0; height: 100%; background: #ffffff; border: 1.5px solid #cbd5e1;">
+                    <div class="card-header" style="align-items: center; border-bottom: 1.5px solid #e2e8f0; padding-bottom: 0.75rem; margin-bottom: 1.25rem;">
+                        <h2 id="form-title" style="color: #0A3161; font-weight: 700; font-size: 1.15rem; margin: 0;">Add Class Schedule</h2>
                     </div>
                     
                     <?php if ($message): ?>
@@ -240,12 +242,12 @@ $schedules = $schedStmt->fetchAll();
                         <input type="hidden" name="schedule_id" id="form-schedule-id" value="">
                         
                         <div class="form-group">
-                            <label>Subject Code (e.g. IT XXX)</label>
-                            <input type="text" name="subject_code" id="form-subject" required>
+                            <label style="color: #0A3161; font-weight: 700; font-size: 0.875rem; display: block; margin-bottom: 0.4rem;">Subject Code (e.g. IT 127)</label>
+                            <input type="text" name="subject_code" id="form-subject" placeholder="e.g. IT 127" style="background:#ffffff; color:#0f172a; border:1.5px solid #cbd5e1;" required>
                         </div>
                         <div class="form-group">
-                            <label>Section (e.g. BSIT X-X)</label>
-                            <input type="text" name="section" id="form-section" required>
+                            <label style="color: #0A3161; font-weight: 700; font-size: 0.875rem; display: block; margin-bottom: 0.4rem;">Section (e.g. BSIT 4-A)</label>
+                            <input type="text" name="section" id="form-section" placeholder="e.g. BSIT 4-A" style="background:#ffffff; color:#0f172a; border:1.5px solid #cbd5e1;" required>
                         </div>
                         <div class="form-group">
                             <label>Teacher</label>

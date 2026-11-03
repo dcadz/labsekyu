@@ -116,22 +116,23 @@ $schedules = $schedStmt->fetchAll();
         .form-group label {
             display: block;
             margin-bottom: 0.5rem;
-            color: var(--text-secondary);
+            color: #0A3161;
+            font-weight: 700;
             font-size: 0.875rem;
         }
         .form-group input, .form-group select {
             width: 100%;
             padding: 0.75rem;
             border-radius: 0.5rem;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid var(--border-color);
-            color: var(--text-primary);
+            background: #ffffff;
+            border: 1.5px solid #cbd5e1;
+            color: #0f172a;
         }
         .btn-submit {
             grid-column: span 2;
             padding: 0.75rem;
             background: var(--accent-green);
-            color: #000;
+            color: #ffffff;
             border: none;
             border-radius: 0.5rem;
             font-weight: 600;
@@ -285,13 +286,13 @@ $schedules = $schedStmt->fetchAll();
                             </tr>
                         <?php else: ?>
                             <?php foreach($schedules as $sched): ?>
-                                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                <tr style="border-bottom: 1px solid var(--border-color);">
                                     <td style="padding: 1rem;">
-                                        <div style="font-weight: 500; color: #fff;"><?= htmlspecialchars($sched['subject_code']) ?></div>
+                                        <div style="font-weight: 600; color: var(--text-primary);"><?= htmlspecialchars($sched['subject_code']) ?></div>
                                         <div style="font-size: 0.75rem; color: var(--text-secondary);"><?= htmlspecialchars($sched['section']) ?> (<?= htmlspecialchars($sched['room_id']) ?>)</div>
                                     </td>
-                                    <td style="padding: 1rem; color: #fff;">
-                                        <div><?= htmlspecialchars($sched['day_of_week']) ?></div>
+                                    <td style="padding: 1rem; color: var(--text-primary);">
+                                        <div style="font-weight: 500;"><?= htmlspecialchars($sched['day_of_week']) ?></div>
                                         <div style="font-size: 0.75rem; color: var(--text-secondary);"><?= date('g:i A', strtotime($sched['start_time'])) ?> - <?= date('g:i A', strtotime($sched['end_time'])) ?></div>
                                     </td>
                                     <td style="padding: 1rem; text-align: center;">

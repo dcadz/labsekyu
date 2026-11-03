@@ -185,17 +185,17 @@ $system_alerts = $sysStmt->fetchAll();
                 <form method="POST" action="">
                     <input type="hidden" name="action" value="report_tech">
                     <div class="form-group">
-                        <label style="color: var(--text-secondary);">Select Room</label>
-                        <select name="room" required style="background: rgba(255, 255, 255, 0.05); color: #fff; border: 1px solid var(--border-color);">
-                            <option value="" style="color: #000;">-- Choose a Room --</option>
+                        <label style="color: var(--text-primary); font-weight: 600;">Select Room</label>
+                        <select name="room" required style="background: #ffffff; color: var(--text-primary); border: 1px solid var(--border-color); width: 100%; padding: 0.75rem; border-radius: 0.5rem;">
+                            <option value="">-- Choose a Room --</option>
                             <?php foreach($all_rooms as $rm): ?>
-                                <option value="<?= htmlspecialchars($rm) ?>" style="color: #000;"><?= htmlspecialchars($rm) ?></option>
+                                <option value="<?= htmlspecialchars($rm) ?>"><?= htmlspecialchars($rm) ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
                     <div class="form-group">
-                        <label style="color: var(--text-secondary);">Message / Issue Description</label>
-                        <textarea name="message" rows="4" required placeholder="Describe the issue..." style="background: rgba(255, 255, 255, 0.05); color: #fff; border: 1px solid var(--border-color);"></textarea>
+                        <label style="color: var(--text-primary); font-weight: 600;">Message / Issue Description</label>
+                        <textarea name="message" rows="4" required placeholder="Describe the issue..." style="background: #ffffff; color: var(--text-primary); border: 1px solid var(--border-color); width: 100%; padding: 0.75rem; border-radius: 0.5rem;"></textarea>
                     </div>
                     <button type="submit" class="btn btn-primary" style="width: 100%;">Submit Ticket</button>
                 </form>

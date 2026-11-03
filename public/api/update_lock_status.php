@@ -1,5 +1,5 @@
 <?php
-// update_lock_status.php
+// public/api/update_lock_status.php
 // Hardware & UI status synchronization endpoint for LABSEKYU
 require_once __DIR__ . '/../../config/database.php';
 
@@ -17,7 +17,7 @@ if (!empty($rawStatus)) {
         $isAllMode = (strtoupper($room) === 'ALL' || strtoupper($room) === 'ANY' || empty($room));
 
         try {
-            // 1. Update the master room status in system_settings table (matching user specification)
+            // 1. Update the master room status in system_settings table
             $settingStmt = $pdo->prepare("
                 INSERT INTO system_settings (setting_key, setting_value) 
                 VALUES ('room_status', :status) 
@@ -25,30 +25,23 @@ if (!empty($rawStatus)) {
             ");
             $settingStmt->execute([':status' => $status]);
 
-            // 2. Update real-time door_status table so all dashboards (Tech Support & Teacher) sync instantly
+            // 2. Update real-time door_status table
             if ($isAllMode) {
-                if ($is_locked === 1) {
-                    $upd = $pdo->prepare("
-                        UPDATE door_status 
-                        SET is_locked = 1, last_override_by = 'Hardware Pulse' 
-                        WHERE is_locked = 0
-                    ");
-                    $upd->execute();
-                } else {
-                    $recentStmt = $pdo->query("SELECT room_id FROM door_status ORDER BY last_updated DESC LIMIT 1");
-                    $targetRoom = $recentStmt->fetchColumn() ?: '101';
-                    $upd = $pdo->prepare("
-                        INSERT INTO door_status (room_id, is_locked, last_override_by) 
-                        VALUES (:room, 0, 'Hardware Pulse') 
-                        ON DUPLICATE KEY UPDATE is_locked = 0, last_override_by = 'Hardware Pulse'
-                    ");
-                    $upd->execute([':room' => $targetRoom]);
+                // Update all rows in door_status
+                $upd = $pdo->prepare("UPDATE door_status SET is_locked = :is_locked, last_override_by = 'Hardware/System'");
+                $upd->execute([':is_locked' => $is_locked]);
+
+                // Ensure default rooms exist if table was empty
+                $count = $pdo->query("SELECT COUNT(*) FROM door_status")->fetchColumn();
+                if ($count == 0) {
+                    $insertDefault = $pdo->prepare("INSERT INTO door_status (room_id, is_locked, last_override_by) VALUES ('101', :is_locked, 'Hardware/System'), ('ICT Lab 1', :is_locked, 'Hardware/System')");
+                    $insertDefault->execute([':is_locked' => $is_locked]);
                 }
             } else {
                 $upd = $pdo->prepare("
                     INSERT INTO door_status (room_id, is_locked, last_override_by) 
-                    VALUES (:room, :is_locked, 'Hardware Pulse') 
-                    ON DUPLICATE KEY UPDATE is_locked = :is_locked, last_override_by = 'Hardware Pulse'
+                    VALUES (:room, :is_locked, 'Hardware/System') 
+                    ON DUPLICATE KEY UPDATE is_locked = :is_locked, last_override_by = 'Hardware/System'
                 ");
                 $upd->execute([
                     ':room' => $room,
@@ -56,10 +49,10 @@ if (!empty($rawStatus)) {
                 ]);
             }
 
-            // 3. Optional: Log to system_alerts if locking after 5-second pulse
+            // 3. Log alert
             try {
                 $alertLocation = $isAllMode ? 'Building' : $room;
-                $actionText = ($is_locked === 1) ? "Door relocked after 5s pulse" : "Door unlocked";
+                $actionText = ($is_locked === 1) ? "Door locked via Hardware/System" : "Door unlocked via Hardware/System";
                 $alertStmt = $pdo->prepare("INSERT INTO system_alerts (severity, location, event_type) VALUES ('Low', :loc, :ev)");
                 $alertStmt->execute([':loc' => $alertLocation, ':ev' => $actionText]);
             } catch (Exception $ex) {}
@@ -75,4 +68,3 @@ if (!empty($rawStatus)) {
     echo "ERROR: Missing status parameter.";
 }
 ?>
-

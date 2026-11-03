@@ -13,103 +13,51 @@ if (empty($room)) {
 
 $isAllMode = (strtoupper($room) === 'ALL' || strtoupper($room) === 'ANY');
 
-// 1. Handle Hardware Action Reports (from ESP32 physical button or auto-pulse complete)
+// 1. Handle Hardware Action Reports (from ESP32 physical button)
 $action = strtolower(trim($_GET['action'] ?? ''));
 if (!empty($action)) {
     try {
+        $newStatus = ($action === 'unlock') ? 'UNLOCKED' : 'LOCKED';
+        $is_locked = ($action === 'lock') ? 1 : 0;
+
+        // Update system_settings
+        $settingStmt = $pdo->prepare("
+            INSERT INTO system_settings (setting_key, setting_value) 
+            VALUES ('room_status', :status) 
+            ON DUPLICATE KEY UPDATE setting_value = :status
+        ");
+        $settingStmt->execute([':status' => $newStatus]);
+
         if ($isAllMode) {
-            if ($action === 'lock') {
-                // Lock all currently unlocked rooms
-                $upd = $pdo->prepare("
-                    UPDATE door_status 
-                    SET is_locked = 1, last_override_by = 'Hardware Button' 
-                    WHERE is_locked = 0
-                ");
-                $upd->execute();
-
-                try {
-                    $alertStmt = $pdo->prepare("INSERT INTO system_alerts (severity, location, event_type) VALUES ('Low', 'Building', 'Door locked via Hardware Button')");
-                    $alertStmt->execute();
-                } catch (Exception $ex) {}
-            } elseif ($action === 'unlock') {
-                // Unlock the most recently active room, or default to Room 101
-                $recentStmt = $pdo->query("SELECT room_id FROM door_status ORDER BY last_updated DESC LIMIT 1");
-                $targetRoom = $recentStmt->fetchColumn() ?: '101';
-
-                $upd = $pdo->prepare("
-                    INSERT INTO door_status (room_id, is_locked, last_override_by) 
-                    VALUES (:room, 0, 'Hardware Button') 
-                    ON DUPLICATE KEY UPDATE is_locked = 0, last_override_by = 'Hardware Button'
-                ");
-                $upd->execute([':room' => $targetRoom]);
-
-                try {
-                    $alertStmt = $pdo->prepare("INSERT INTO system_alerts (severity, location, event_type) VALUES ('Low', :location, :event_type)");
-                    $alertStmt->execute([
-                        ':location' => $targetRoom,
-                        ':event_type' => "Room {$targetRoom} opened by Hardware Button"
-                    ]);
-                } catch (Exception $ex) {}
-            }
+            $upd = $pdo->prepare("UPDATE door_status SET is_locked = :is_locked, last_override_by = 'Hardware Button'");
+            $upd->execute([':is_locked' => $is_locked]);
         } else {
-            // Specific Room Mode
-            if ($action === 'lock') {
-                $upd = $pdo->prepare("
-                    INSERT INTO door_status (room_id, is_locked, last_override_by) 
-                    VALUES (:room, 1, 'Hardware Button') 
-                    ON DUPLICATE KEY UPDATE is_locked = 1, last_override_by = 'Hardware Button'
-                ");
-                $upd->execute([':room' => $room]);
-
-                try {
-                    $alertStmt = $pdo->prepare("INSERT INTO system_alerts (severity, location, event_type) VALUES ('Low', :location, :event_type)");
-                    $alertStmt->execute([
-                        ':location' => $room,
-                        ':event_type' => "Room {$room} closed by Hardware Button"
-                    ]);
-                } catch (Exception $ex) {}
-            } elseif ($action === 'unlock') {
-                $upd = $pdo->prepare("
-                    INSERT INTO door_status (room_id, is_locked, last_override_by) 
-                    VALUES (:room, 0, 'Hardware Button') 
-                    ON DUPLICATE KEY UPDATE is_locked = 0, last_override_by = 'Hardware Button'
-                ");
-                $upd->execute([':room' => $room]);
-
-                try {
-                    $alertStmt = $pdo->prepare("INSERT INTO system_alerts (severity, location, event_type) VALUES ('Low', :location, :event_type)");
-                    $alertStmt->execute([
-                        ':location' => $room,
-                        ':event_type' => "Room {$room} opened by Hardware Button"
-                    ]);
-                } catch (Exception $ex) {}
-            } elseif ($action === 'toggle') {
-                $curStmt = $pdo->prepare("SELECT is_locked FROM door_status WHERE room_id = :room LIMIT 1");
-                $curStmt->execute([':room' => $room]);
-                $cur = $curStmt->fetch();
-                $newLock = ($cur && (int)$cur['is_locked'] === 1) ? 0 : 1;
-
-                $upd = $pdo->prepare("
-                    INSERT INTO door_status (room_id, is_locked, last_override_by) 
-                    VALUES (:room, :newLock, 'Hardware Button') 
-                    ON DUPLICATE KEY UPDATE is_locked = :newLock, last_override_by = 'Hardware Button'
-                ");
-                $upd->execute([':room' => $room, ':newLock' => $newLock]);
-            }
+            $upd = $pdo->prepare("
+                INSERT INTO door_status (room_id, is_locked, last_override_by) 
+                VALUES (:room, :is_locked, 'Hardware Button') 
+                ON DUPLICATE KEY UPDATE is_locked = :is_locked, last_override_by = 'Hardware Button'
+            ");
+            $upd->execute([':room' => $room, ':is_locked' => $is_locked]);
         }
-    } catch (Exception $e) {
-        // Silently continue
-    }
+    } catch (Exception $e) {}
 }
 
 // 2. Query Real-Time Status for ESP32
 try {
-    if ($isAllMode) {
-        // In ALL mode: Check if ANY room in the building is unlocked
-        $stmt = $pdo->query("SELECT room_id FROM door_status WHERE is_locked = 0 ORDER BY last_updated DESC LIMIT 1");
-        $unlocked = $stmt->fetch();
+    // Check master setting
+    $masterUnlocked = false;
+    $setStmt = $pdo->query("SELECT setting_value FROM system_settings WHERE setting_key = 'room_status' LIMIT 1");
+    $settingVal = $setStmt ? $setStmt->fetchColumn() : null;
+    if ($settingVal && strtoupper(trim($settingVal)) === 'UNLOCKED') {
+        $masterUnlocked = true;
+    }
 
-        if ($unlocked) {
+    if ($isAllMode) {
+        // In ALL mode: Check if master setting is UNLOCKED or ANY room is unlocked
+        $stmt = $pdo->query("SELECT room_id FROM door_status WHERE is_locked = 0 LIMIT 1");
+        $unlockedRow = $stmt ? $stmt->fetch() : false;
+
+        if ($masterUnlocked || $unlockedRow) {
             echo "UNLOCKED";
         } else {
             echo "LOCKED";
@@ -120,7 +68,7 @@ try {
         $stmt->execute([':room' => $room]);
         $status = $stmt->fetch();
 
-        if ($status && (int)$status['is_locked'] === 0) {
+        if ($masterUnlocked || ($status && (int)$status['is_locked'] === 0)) {
             echo "UNLOCKED";
         } else {
             echo "LOCKED";
@@ -129,4 +77,4 @@ try {
 } catch (Exception $e) {
     echo "LOCKED";
 }
-
+?>

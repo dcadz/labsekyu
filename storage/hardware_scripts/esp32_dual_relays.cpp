@@ -30,12 +30,9 @@
 // ==================================================================================
 // --- 1. Network & Server Configuration ---
 // ==================================================================================
-const char *ssid     = "Saint Laurent";
-const char *password = "Intherealmofscienceandtechnologywearehereaswego12.";
-
-// Host computer's local Wi-Fi IPv4 address running XAMPP (Apache):
-// ⚠️ If your computer connects to a different Wi-Fi, run 'ipconfig' in CMD and update this:
-const char *hostIp   = "192.168.0.35"; 
+const char *ssid     = "Converge_2.4GHz_5325";
+const char *password = "5akPEYt4";
+const char *hostIp   = "192.168.1.61"; 
 
 // Target Room ID assigned to this solenoid controller (matches the room in the Web Dashboard):
 // 🌟 Set to "ALL" (default) so this solenoid dynamically responds to ANY room unlocked on the website!
@@ -74,8 +71,8 @@ const unsigned long MAX_CONTINUOUS_UNLOCK_MS = 10UL * 60UL * 1000UL; // 10 minut
 
 // Mode 2: MOMENTARY ACCESS PULSE (5-Second Anti-Overheating Cutoff)
 // 🌟 Set to true to automatically lock after 5 seconds and notify the database
-const bool AUTO_RELOCK_PULSE = true;
-const unsigned long UNLOCK_PULSE_MS = 5000; // 5-second hardware pulse
+const bool AUTO_RELOCK_PULSE = false;  // false = continuous toggle mode (matches solenoid_lock.ino policy)
+const unsigned long UNLOCK_PULSE_MS = 5000; // 5-second hardware pulse (only active if AUTO_RELOCK_PULSE=true)
 
 // Fast Polling Interval: 300ms for virtually instant response from website clicks
 const unsigned long pollInterval = 300; 
@@ -149,20 +146,12 @@ void sendActionToServer(const String& action) {
   syncHttp.setTimeout(800);
   syncHttp.setConnectTimeout(800);
 
-  // 1. Notify update_lock_status.php endpoint
+  // Notify update_lock_status.php — single authoritative write, no double sync
   String statusParam = (action == "unlock") ? "UNLOCKED" : "LOCKED";
   String updateUrl = String("http://") + hostIp + "/labsekyu2/public/api/update_lock_status.php?status=" + statusParam + "&room=" + roomName;
   if (syncHttp.begin(syncClient, updateUrl)) {
     int code = syncHttp.GET();
     Serial.printf("[SERVER SYNC] update_lock_status -> HTTP %d (%s)\n", code, statusParam.c_str());
-    syncHttp.end();
-  }
-
-  // 2. Also report action to get_lock_status.php
-  char separator = (lockStatusApiUrl.indexOf('?') >= 0) ? '&' : '?';
-  String fullUrl = lockStatusApiUrl + separator + "action=" + action;
-  if (syncHttp.begin(syncClient, fullUrl)) {
-    syncHttp.GET();
     syncHttp.end();
   }
 }
@@ -314,16 +303,20 @@ void loop() {
           payload.trim();
           payload.toUpperCase();
 
-          if (payload.indexOf("UNLOCKED") != -1) {
+          // ✅ EXACT MATCH: "UNLOCKED" contains "LOCKED" as a substring.
+          // Using indexOf() causes "UNLOCKED" to trigger the LOCKED branch too → relay chatters.
+          // Exact equality comparison is the only safe check here.
+          if (payload == "UNLOCKED") {
             if (!isUnlocked) {
               triggerUnlock("Web Dashboard");
             }
-          } else if (payload.indexOf("LOCKED") != -1) {
+          } else if (payload == "LOCKED") {
             if (isUnlocked) {
               triggerLock("Web Dashboard");
             }
           }
         }
+        pollHttp.end(); // ✅ Always release TCP socket to prevent connection exhaustion
       }
     } else {
       WiFi.reconnect();

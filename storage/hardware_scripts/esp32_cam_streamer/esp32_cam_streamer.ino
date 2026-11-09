@@ -18,9 +18,9 @@
 
 // WIFI CREDENTIALS
 
-const char *ssid = "Saint Laurent";
+const char *ssid = "Huawei Matebook D14";
 
-const char *password = "Intherealmofscienceandtechnologywearehereaswego12.";
+const char *password = "123456789";
 
 #define PART_BOUNDARY "123456789000000000000987654321"
 

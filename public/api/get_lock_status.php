@@ -20,59 +20,49 @@ if (!empty($action)) {
         $newStatus = ($action === 'unlock') ? 'UNLOCKED' : 'LOCKED';
         $is_locked = ($action === 'lock') ? 1 : 0;
 
-        // Update system_settings
-        $settingStmt = $pdo->prepare("
-            INSERT INTO system_settings (setting_key, setting_value) 
-            VALUES ('room_status', :status) 
-            ON DUPLICATE KEY UPDATE setting_value = :status
-        ");
-        $settingStmt->execute([':status' => $newStatus]);
-
         if ($isAllMode) {
-            $upd = $pdo->prepare("UPDATE door_status SET is_locked = :is_locked, last_override_by = 'Hardware Button'");
-            $upd->execute([':is_locked' => $is_locked]);
+            // ALL-mode: safe to write global system_settings + all rows
+            $pdo->prepare("
+                INSERT INTO system_settings (setting_key, setting_value) 
+                VALUES ('room_status', :status) 
+                ON DUPLICATE KEY UPDATE setting_value = :status
+            ")->execute([':status' => $newStatus]);
+
+            $pdo->prepare("UPDATE door_status SET is_locked = :is_locked, last_override_by = 'Hardware Button'")
+               ->execute([':is_locked' => $is_locked]);
         } else {
-            $upd = $pdo->prepare("
+            // Specific room: update ONLY that room row.
+            // Do NOT touch system_settings — that is a global flag and would bleed
+            // into every other room's status query via masterUnlocked.
+            $pdo->prepare("
                 INSERT INTO door_status (room_id, is_locked, last_override_by) 
                 VALUES (:room, :is_locked, 'Hardware Button') 
                 ON DUPLICATE KEY UPDATE is_locked = :is_locked, last_override_by = 'Hardware Button'
-            ");
-            $upd->execute([':room' => $room, ':is_locked' => $is_locked]);
+            ")->execute([':room' => $room, ':is_locked' => $is_locked]);
         }
     } catch (Exception $e) {}
 }
 
 // 2. Query Real-Time Status for ESP32
 try {
-    // Check master setting
-    $masterUnlocked = false;
-    $setStmt = $pdo->query("SELECT setting_value FROM system_settings WHERE setting_key = 'room_status' LIMIT 1");
-    $settingVal = $setStmt ? $setStmt->fetchColumn() : null;
-    if ($settingVal && strtoupper(trim($settingVal)) === 'UNLOCKED') {
-        $masterUnlocked = true;
-    }
-
     if ($isAllMode) {
-        // In ALL mode: Check if master setting is UNLOCKED or ANY room is unlocked
-        $stmt = $pdo->query("SELECT room_id FROM door_status WHERE is_locked = 0 LIMIT 1");
-        $unlockedRow = $stmt ? $stmt->fetch() : false;
-
-        if ($masterUnlocked || $unlockedRow) {
-            echo "UNLOCKED";
-        } else {
-            echo "LOCKED";
+        // ALL-mode: check global master setting OR any unlocked room row
+        $masterUnlocked = false;
+        $setStmt = $pdo->query("SELECT setting_value FROM system_settings WHERE setting_key = 'room_status' LIMIT 1");
+        $settingVal = $setStmt ? $setStmt->fetchColumn() : null;
+        if ($settingVal && strtoupper(trim($settingVal)) === 'UNLOCKED') {
+            $masterUnlocked = true;
         }
+        $unlockedRow = $pdo->query("SELECT room_id FROM door_status WHERE is_locked = 0 LIMIT 1")->fetch();
+        echo ($masterUnlocked || $unlockedRow) ? "UNLOCKED" : "LOCKED";
     } else {
-        // Specific Room Mode
+        // Specific room: check ONLY that room's row — ignore global system_settings.
+        // masterUnlocked must NOT be used here because it was set by button presses
+        // in ALL-mode and would incorrectly force individual rooms to report UNLOCKED.
         $stmt = $pdo->prepare("SELECT is_locked FROM door_status WHERE room_id = :room LIMIT 1");
         $stmt->execute([':room' => $room]);
         $status = $stmt->fetch();
-
-        if ($masterUnlocked || ($status && (int)$status['is_locked'] === 0)) {
-            echo "UNLOCKED";
-        } else {
-            echo "LOCKED";
-        }
+        echo ($status && (int)$status['is_locked'] === 0) ? "UNLOCKED" : "LOCKED";
     }
 } catch (Exception $e) {
     echo "LOCKED";

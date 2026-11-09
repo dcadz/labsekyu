@@ -227,7 +227,7 @@ if ($enrolled_count > 0) {
     <link rel="stylesheet" href="../../assets/css/dashboard.css">
     <script>
         function handleCamError(camKey, imgElement) {
-            const directUrl = (camKey === 'A') ? 'http://192.168.0.87:81/stream' : 'http://192.168.0.149:81/stream';
+            const directUrl = (camKey === 'A') ? 'http://192.168.137.90:81/stream' : 'http://192.168.137.135:81/stream';
             // First fallback: If port 8000 AI relay fails, connect directly to ESP32 stream
             if (imgElement.src.indexOf(':8000') !== -1) {
                 console.warn(`Camera ${camKey} port 8000 feed unavailable. Falling back to direct ESP32 stream: ${directUrl}`);
@@ -245,7 +245,7 @@ if ($enrolled_count > 0) {
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"></path>
                     </svg>
                     <div style="font-weight:700; color:#cbd5e1; font-size:0.95rem;">Camera Stream Offline</div>
-                    <div style="font-size:0.75rem; color:#64748b;">${camKey === 'A' ? 'Camera A (Log In / Entrance • 192.168.0.87)' : 'Camera B (Log Out / Exit • 192.168.0.149)'}</div>
+                    <div style="font-size:0.75rem; color:#64748b;">${camKey === 'A' ? 'Camera A (Log In / Entrance • 192.168.137.90)' : 'Camera B (Log Out / Exit • 192.168.137.135)'}</div>
                     <div style="font-size:0.75rem; color:#38bdf8; margin-top:0.25rem;">Start AI Server: python storage/hardware_scripts/server.py</div>
                     <button type="button" onclick="retryCam('${camKey}')" class="btn" style="padding:0.35rem 1rem; font-size:0.75rem; background:#1e293b; color:#38bdf8; border:1px solid #334155; border-radius:0.35rem; margin-top:0.5rem; cursor:pointer; font-weight:600;">Reconnect Stream</button>
                 `;

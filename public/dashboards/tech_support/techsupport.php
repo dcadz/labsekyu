@@ -494,12 +494,12 @@ if (empty($attendance_feed)) {
         const camB = document.getElementById('cam-exit-status');
         
         const streamA = `http://${window.location.hostname}:8000/video_feed/IN?room=` + encodeURIComponent(roomNumber) + '&t=' + Date.now();
-        const directA = `http://192.168.0.87:81/stream?t=` + Date.now();
+        const directA = `http://192.168.137.90:81/stream?t=` + Date.now();
         camA.innerHTML = `<img src="${streamA}" style="width:100%; height:100%; object-fit:cover;" onerror="if(this.src!=='${directA}'){this.src='${directA}';}else{this.outerHTML='<div style=\\'display:flex; height:100%; align-items:center; justify-content:center; flex-direction:column; color:var(--accent-red);\\'><svg width=\\'40\\' height=\\'40\\' fill=\\'none\\' stroke=\\'currentColor\\' viewBox=\\'0 0 24 24\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' stroke-width=\\'2\\' d=\\'M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636\\'></path></svg><span style=\\'margin-top:0.5rem\\'>Offline - No camera detected</span></div>';}">
                           <span style="position: absolute; bottom: 0.75rem; font-size: 0.75rem; background: rgba(0,0,0,0.5); color: #fff; padding: 0.25rem 0.5rem; border-radius: 0.25rem;">Camera A (Log In)</span>`;
 
         const streamB = `http://${window.location.hostname}:8000/video_feed/OUT?room=` + encodeURIComponent(roomNumber) + '&t=' + Date.now();
-        const directB = `http://192.168.0.149:81/stream?t=` + Date.now();
+        const directB = `http://192.168.137.135:81/stream?t=` + Date.now();
         camB.innerHTML = `<img src="${streamB}" style="width:100%; height:100%; object-fit:cover;" onerror="if(this.src!=='${directB}'){this.src='${directB}';}else{this.outerHTML='<div style=\\'display:flex; height:100%; align-items:center; justify-content:center; flex-direction:column; color:var(--accent-red);\\'><svg width=\\'40\\' height=\\'40\\' fill=\\'none\\' stroke=\\'currentColor\\' viewBox=\\'0 0 24 24\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' stroke-width=\\'2\\' d=\\'M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636\\'></path></svg><span style=\\'margin-top:0.5rem\\'>Offline - No camera detected</span></div>';}">
                           <span style="position: absolute; bottom: 0.75rem; font-size: 0.75rem; background: rgba(0,0,0,0.5); color: #fff; padding: 0.25rem 0.5rem; border-radius: 0.25rem;">Camera B (Log Out)</span>`;
 

@@ -17,13 +17,16 @@ if (!empty($rawStatus)) {
         $isAllMode = (strtoupper($room) === 'ALL' || strtoupper($room) === 'ANY' || empty($room));
 
         try {
-            // 1. Update the master room status in system_settings table
-            $settingStmt = $pdo->prepare("
-                INSERT INTO system_settings (setting_key, setting_value) 
-                VALUES ('room_status', :status) 
-                ON DUPLICATE KEY UPDATE setting_value = :status
-            ");
-            $settingStmt->execute([':status' => $status]);
+            // 1. Update system_settings ONLY in ALL-mode.
+            //    Writing it for a specific room would corrupt the global flag and cause
+            //    all other rooms to falsely show as UNLOCKED/LOCKED on the dashboard.
+            if ($isAllMode) {
+                $pdo->prepare("
+                    INSERT INTO system_settings (setting_key, setting_value) 
+                    VALUES ('room_status', :status) 
+                    ON DUPLICATE KEY UPDATE setting_value = :status
+                ")->execute([':status' => $status]);
+            }
 
             // 2. Update real-time door_status table
             if ($isAllMode) {
@@ -34,19 +37,16 @@ if (!empty($rawStatus)) {
                 // Ensure default rooms exist if table was empty
                 $count = $pdo->query("SELECT COUNT(*) FROM door_status")->fetchColumn();
                 if ($count == 0) {
-                    $insertDefault = $pdo->prepare("INSERT INTO door_status (room_id, is_locked, last_override_by) VALUES ('101', :is_locked, 'Hardware/System'), ('ICT Lab 1', :is_locked, 'Hardware/System')");
-                    $insertDefault->execute([':is_locked' => $is_locked]);
+                    $pdo->prepare("INSERT INTO door_status (room_id, is_locked, last_override_by) VALUES ('101', :is_locked, 'Hardware/System'), ('ICT Lab 1', :is_locked, 'Hardware/System')")
+                       ->execute([':is_locked' => $is_locked]);
                 }
             } else {
-                $upd = $pdo->prepare("
+                // Specific room: update only that single room row
+                $pdo->prepare("
                     INSERT INTO door_status (room_id, is_locked, last_override_by) 
                     VALUES (:room, :is_locked, 'Hardware/System') 
                     ON DUPLICATE KEY UPDATE is_locked = :is_locked, last_override_by = 'Hardware/System'
-                ");
-                $upd->execute([
-                    ':room' => $room,
-                    ':is_locked' => $is_locked
-                ]);
+                ")->execute([':room' => $room, ':is_locked' => $is_locked]);
             }
 
             // 3. Log alert

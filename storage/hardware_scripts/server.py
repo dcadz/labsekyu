@@ -47,8 +47,8 @@ MODEL = 'hog'
 BACKUP_INTERVAL = 60
 
 # Camera hardware stream URLs
-ESP32_IN_URL = "http://192.168.0.87:81/stream"    # Camera A (Log In / Entrance)
-ESP32_OUT_URL = "http://192.168.0.149:81/stream"  # Camera B (Log Out / Exit)
+ESP32_IN_URL = "http://192.168.137.90:81/stream"    # Camera A (Log In / Entrance)
+ESP32_OUT_URL = "http://192.168.137.135:81/stream"  # Camera B (Log Out / Exit)
 PHP_LOG_URL = "http://localhost/labsekyu2/public/api/hardware_log.php"
 
 # Strict Attendance Cooldown Timer: 5 minutes (300 seconds)
@@ -65,6 +65,8 @@ mjpeg_thread_in = None
 mjpeg_thread_out = None
 latest_frame_in = b''
 latest_frame_out = b''
+last_frame_time_in = 0.0
+last_frame_time_out = 0.0
 
 # In-memory tracking of recent ping / attendance timestamps
 last_ping_times = {}
@@ -156,13 +158,14 @@ def backup_thread():
         save_detections()
 
 def mjpeg_consumer_thread(stream_url, device_id):
-    global stream_active
+    global stream_active, latest_frame_in, latest_frame_out, last_frame_time_in, last_frame_time_out
     print(f"Starting MJPEG consumer thread for {device_id} at {stream_url}")
     session = requests.Session()
     
     while stream_active:
         try:
-            response = session.get(stream_url, stream=True, timeout=5)
+            # Enforce connect timeout (3s) and read timeout (5s) to prevent thread hang
+            response = session.get(stream_url, stream=True, timeout=(3.0, 5.0))
             if response.status_code != 200:
                 print(f"[{device_id}] Failed connecting to stream: HTTP {response.status_code}")
                 time.sleep(3)
@@ -176,6 +179,10 @@ def mjpeg_consumer_thread(stream_url, device_id):
                     break
                 bytes_data += chunk
                 
+                # Protect against buffer runaway / corrupted frame stream
+                if len(bytes_data) > 250000:
+                    bytes_data = bytes_data[-65536:]
+                
                 while True:
                     a = bytes_data.find(b'\xff\xd8')
                     b = bytes_data.find(b'\xff\xd9')
@@ -187,16 +194,18 @@ def mjpeg_consumer_thread(stream_url, device_id):
                         jpg = bytes_data[a:b+2]
                         bytes_data = bytes_data[b+2:]
                         
-                        global latest_frame_in, latest_frame_out
+                        now_ts = time.time()
                         if device_id == "IN":
                             latest_frame_in = jpg
+                            last_frame_time_in = now_ts
                         else:
                             latest_frame_out = jpg
+                            last_frame_time_out = now_ts
                     else:
                         bytes_data = bytes_data[a:]
         except Exception as e:
             # Handle timeout / reconnection cleanly
-            time.sleep(2)
+            time.sleep(1)
 
 def is_face_large_enough(face_location):
     top, right, bottom, left = face_location
@@ -246,7 +255,7 @@ def query_student_daily_record(person_id):
     1. Query the database for the student's current daily record.
     """
     try:
-        url = f"{PHP_LOG_URL}?action=status&uid={person_id}&api_key={API_KEY}"
+        url = f"{PHP_LOG_URL}?action=status&uid={person_id}&api_key={API_KEY}&format=json"
         resp = requests.get(url, timeout=3)
         if resp.status_code == 200:
             return resp.json()
@@ -390,14 +399,19 @@ def video_feed(device_id=None):
     dev = str(dev).upper()
     is_in = (dev in ['IN', 'A', 'CAMA', 'CAMERA_A', 'ENTRANCE'])
     def generate():
+        last_sent = b''
         while True:
             frame = latest_frame_in if is_in else latest_frame_out
-            if not frame:
+            frame_time = last_frame_time_in if is_in else last_frame_time_out
+            
+            # If camera stream has had no new frames for over 6 seconds, back off
+            if not frame or (time.time() - frame_time > 6.0):
                 time.sleep(0.1)
                 continue
+                
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            time.sleep(0.05)
+            time.sleep(0.04)
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/api/register_face', methods=['POST'])

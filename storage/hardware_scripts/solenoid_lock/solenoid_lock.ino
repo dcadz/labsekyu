@@ -27,9 +27,9 @@
 // ==================================================================================
 // --- 1. Network & Server Configuration ---
 // ==================================================================================
-const char *ssid     = "Saint Laurent";
-const char *password = "Intherealmofscienceandtechnologywearehereaswego12.";
-const char *hostIp   = "192.168.0.35"; 
+const char *ssid     = "Converge_2.4GHz_5325";
+const char *password = "5akPEYt4";
+const char *hostIp   = "192.168.1.61"; 
 const char *roomName = "ALL";
 
 String lockStatusApiUrl = String("http://") + hostIp + "/labsekyu2/public/api/get_lock_status.php?room=" + roomName;
@@ -64,7 +64,7 @@ const unsigned long pollInterval = 300; // Poll web status every 300ms
 volatile bool isUnlocked = false;                   
 volatile unsigned long unlockStartTime = 0;         
 volatile bool buttonActionPending = false;          
-volatile bool pendingActionIsUnlock = false;
+volatile bool pendingActionIsUnlock = false; // volatile: written in ISR, read in loop()
 volatile unsigned long lastButtonInterruptTime = 0; 
 unsigned long lastManualActionTime = 0;              
 unsigned long lastPollTime = 0;                     
@@ -271,13 +271,15 @@ void loop() {
           payload.trim();
           payload.toUpperCase();
 
-          if (payload.indexOf("UNLOCKED") != -1 && !isUnlocked) {
+          // Exact string match prevents "UNLOCKED" from triggering "LOCKED" substring match!
+          if (payload == "UNLOCKED" && !isUnlocked) {
             triggerUnlock("Web Dashboard Unlock Command");
-          } else if (payload.indexOf("LOCKED") != -1 && isUnlocked) {
+          } else if (payload == "LOCKED" && isUnlocked) {
             // Strict lock command from web dashboard -> cut power immediately
             triggerLock("Web Dashboard Lock Command");
           }
         }
+        pollHttp.end(); // Clean up connection
       }
     }
   }
